@@ -30,17 +30,17 @@ void h(int** p, int** q, void* t, char* s)
     *q = *p + 1;
 }
 
-void k(int x)
+void k(int* p, int* q)
 {
-    int a = x + 1;
-    int b = a + 1;
+    int tmp = *p;
+    *p      = *q;
+    *q      = tmp;
 }
 
 int global;
-
-int m(int x)
+void l(int x)
 {
-    int tmp = global;
+    static int s;
     global = x;
-    return tmp;
+    s = x;
 }

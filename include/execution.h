@@ -2,9 +2,10 @@
 #include "location.h"
 #include "constraint.h"
 
+struct FunctionSummary;
 class AnalysisContext;
 
-using PointToMap = std::unordered_map<LocationVar, Constraint>;
+using PointToMap    = std::unordered_map<LocationVar, Constraint>;
 using AbstractStore = std::unordered_map<LocationVar, PointToMap>;
 
 void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c);
@@ -12,7 +13,7 @@ void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c);
 // compare
 // both stores are assumed to be normalized
 // i.e. every constrainted edge is satisfiable
-bool EqualAbstractStore(ConstraintEngine& smt_engine, const AbstractStore& s1, const AbstractStore& s2);
+bool EqualAbstractStore(ConstraintSolver& smt_engine, const AbstractStore& s1, const AbstractStore& s2);
 
 // merge point-to graphs into s1
 void MergeAbstractStore(AbstractStore& s1, const AbstractStore& s2);
@@ -22,7 +23,8 @@ class AbstractExecution
 public:
     AbstractExecution(AnalysisContext* ctx, AbstractStore store)
         : ctx_(ctx), alias_map_(), store_(store)
-    {}
+    {
+    }
 
     const AnalysisContext& GetContext() const noexcept
     {
@@ -51,23 +53,28 @@ public:
     void NormalizeStore();
 
     // let alias_ptr ~= ptr
-    void AliasRegister(LocationVar reg, LocationVar alias_target);
+    void AliasRegister(const llvm::Value* reg, const llvm::Value* alias_target);
 
     // unroll alias
-    LocationVar GetCanonicalLoc(LocationVar loc);
+    const llvm::Value* GetCanonicalRegister(const llvm::Value* reg);
 
     // x = alloc(?)
-    void AssignRegister(LocationVar reg, LocationVar val);
+    void AssignRegister(const llvm::Value* reg, LocationVar val);
+
+    // x = f(...)
+    void Invoke(const llvm::Value* reg_assign, const llvm::Value** reg_args, const FunctionSummary& summary);
 
     // x = *p
-    void ReadStore(LocationVar reg, LocationVar loc_to_ptr);
+    void ReadStore(const llvm::Value* reg, const llvm::Value* reg_ptr);
 
     // *p = x
-    void WriteStore(LocationVar loc_to_val, LocationVar loc_to_ptr);
+    void WriteStore(const llvm::Value* reg_val, const llvm::Value* reg_ptr);
 
 private:
+    PointToMap& LookupRegister(const llvm::Value* reg);
+
     AnalysisContext* ctx_;
 
-    std::unordered_map<LocationVar, LocationVar> alias_map_;
+    std::unordered_map<const llvm::Value*, const llvm::Value*> alias_map_;
     AbstractStore store_;
 };

@@ -1,12 +1,19 @@
 #include "execution.h"
 #include "analysis.h"
+#include "constraint.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/Function.h"
+#include <map>
+
+using namespace std;
+using namespace llvm;
 
 void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c)
 {
     auto it = edges.find(loc);
     if (it == edges.end())
     {
-        edges.emplace(std::make_pair(loc, std::move(c)));
+        edges.insert(make_pair(loc, move(c)));
     }
     else
     {
@@ -14,7 +21,7 @@ void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c)
     }
 }
 
-bool EqualAbstractStore(ConstraintEngine& smt_engine, const AbstractStore& s1, const AbstractStore& s2)
+bool EqualAbstractStore(ConstraintSolver& smt_engine, const AbstractStore& s1, const AbstractStore& s2)
 {
     if (s1.size() != s2.size())
     {
@@ -25,7 +32,7 @@ bool EqualAbstractStore(ConstraintEngine& smt_engine, const AbstractStore& s1, c
     for (const auto& [src_loc, pt_map_1] : s1)
     {
         // TODO: does src location always exist in s2?
-        const auto& pt_map_2 = s2.at(src_loc);
+        const PointToMap& pt_map_2 = s2.at(src_loc);
         if (pt_map_1.size() != pt_map_2.size())
         {
             // different topology(num target location)
@@ -41,7 +48,7 @@ bool EqualAbstractStore(ConstraintEngine& smt_engine, const AbstractStore& s1, c
                 return false;
             }
 
-            const auto& c2 = it->second;
+            const Constraint& c2 = it->second;
             if (!smt_engine.TestEquivalence(c1, c2))
             {
                 // different constraint
@@ -95,13 +102,13 @@ void AbstractExecution::NormalizeStore()
         for (auto it = pt_map.begin(); it != pt_map.end();)
         {
             it->second.Simplify();
-            
-            if (ctx_->GetConstraintEngine().TestValidity(it->second))
+
+            if (ctx_->GetSmtSolver().TestValidity(it->second))
             {
-                it->second = ctx_->GetConstraintEngine().MakeTop();
+                it->second = ctx_->GetSmtSolver().MakeTop();
                 ++it;
             }
-            else if (!ctx_->GetConstraintEngine().TestSatisfiability(it->second))
+            else if (!ctx_->GetSmtSolver().TestSatisfiability(it->second))
             {
                 it = pt_map.erase(it);
             }
@@ -113,79 +120,125 @@ void AbstractExecution::NormalizeStore()
     }
 }
 
-void AbstractExecution::AliasRegister(LocationVar reg, LocationVar alias_target)
+void AbstractExecution::AliasRegister(const llvm::Value* reg, const llvm::Value* alias_target)
 {
     alias_map_.insert_or_assign(reg, alias_target);
 }
 
-LocationVar AbstractExecution::GetCanonicalLoc(LocationVar loc)
+const llvm::Value* AbstractExecution::GetCanonicalRegister(const llvm::Value* reg)
 {
-    if (auto it = alias_map_.find(loc); it != alias_map_.end())
+    if (auto it = alias_map_.find(reg); it != alias_map_.end())
     {
         return it->second;
     }
     else
     {
-        return loc;
+        return reg;
     }
 }
-void AbstractExecution::AssignRegister(LocationVar reg, LocationVar val)
+
+void AbstractExecution::AssignRegister(const llvm::Value* reg, LocationVar val)
 {
-    store_[reg] = PointToMap{ {val, ctx_->GetConstraintEngine().MakeTop()} };
+    LocationVar loc_reg = LocationVar::FromProgramValue(reg);
+    store_[loc_reg]     = PointToMap{{val, ctx_->GetSmtSolver().MakeTop()}};
 }
-void AbstractExecution::ReadStore(LocationVar reg, LocationVar loc_to_ptr)
+
+void AbstractExecution::Invoke(const llvm::Value* reg_assign, const llvm::Value** reg_args, const FunctionSummary& summary)
+{
+    // TODO: filter out non-ptr argument to be consistant with analysis input collection
+    int num_args = summary.function->arg_size();
+    map<pair<int, int>, Constraint> contraint_map;
+    for (int i = 1; i < num_args; ++i)
+    {
+        for (int j = 0; j < i; ++j)
+        {
+            PointToMap& pt_map_i = LookupRegister(reg_args[i]);
+            PointToMap& pt_map_j = LookupRegister(reg_args[j]);
+
+            Constraint c = ctx_->GetSmtSolver().MakeBottom();
+            for (const auto& [target_loc, c_i] : pt_map_i)
+            {
+                if (auto iter = pt_map_j.find(target_loc); iter != pt_map_j.end())
+                {
+                    const Constraint& c_j = iter->second;
+                    c                     = c || (c_i && c_j);
+                }
+            }
+
+            constraint_map[make_pair(i, j)] = c;
+        }
+    }
+}
+
+void AbstractExecution::ReadStore(const llvm::Value* reg, const llvm::Value* reg_ptr)
 {
     // unroll alias
-    loc_to_ptr = GetCanonicalLoc(loc_to_ptr);
+    reg_ptr = GetCanonicalRegister(reg_ptr);
 
-    //
-    auto& point_to_map = store_[reg];
-    point_to_map.clear();
-    for (const auto& [ptr, ptr_constraint] : store_[loc_to_ptr])
+    // update point-to map
+    PointToMap& pt_map = store_[LocationVar::FromProgramValue(reg)];
+    pt_map.clear();
+
+    PointToMap& ptr_loc_pt_map = LookupRegister(reg_ptr);
+    for (const auto& [ptr, ptr_constraint] : ptr_loc_pt_map)
     {
         for (const auto& [val, val_constraint] : store_[ptr])
         {
             // TODO: filter unsatisfiable edges?
-            AddPointToEdge(point_to_map, val, ptr_constraint && val_constraint);
+            AddPointToEdge(pt_map, val, ptr_constraint && val_constraint);
         }
     }
 }
-void AbstractExecution::WriteStore(LocationVar loc_to_val, LocationVar loc_to_ptr)
+
+void AbstractExecution::WriteStore(const Value* reg_val, const Value* reg_ptr)
 {
     // unroll alias
-    loc_to_val = GetCanonicalLoc(loc_to_val);
-    loc_to_ptr = GetCanonicalLoc(loc_to_ptr);
+    reg_val = GetCanonicalRegister(reg_val);
+    reg_ptr = GetCanonicalRegister(reg_ptr);
 
-    //
-    // TODO: eliminate this branch, could be unified?
-    if (loc_to_val.GetTag() == LocationTag::Value)
+    // update point-to map
+    const PointToMap& val_loc_pt_map = LookupRegister(reg_val);
+    const PointToMap& ptr_loc_pt_map = LookupRegister(reg_ptr);
+    for (const auto& [ptr, ptr_constraint] : ptr_loc_pt_map)
     {
-        for (const auto& [ptr, ptr_constraint] : store_[loc_to_ptr])
+        auto& ptr_pt_map = store_[ptr];
+        for (auto& [old_val, old_val_constraint] : ptr_pt_map)
         {
-            auto& ptr_pt_map = store_[ptr];
-            for (auto& [old_val, old_val_constraint] : ptr_pt_map)
-            {
-                old_val_constraint = !ptr_constraint && old_val_constraint;
-            }
-
-            AddPointToEdge(ptr_pt_map, loc_to_val, ptr_constraint);
+            old_val_constraint = !ptr_constraint && old_val_constraint;
         }
+
+        for (const auto& [val, val_constraint] : val_loc_pt_map)
+        {
+            AddPointToEdge(ptr_pt_map, val, ptr_constraint && val_constraint);
+        }
+    }
+}
+
+PointToMap& AbstractExecution::LookupRegister(const llvm::Value* reg)
+{
+    assert(reg != nullptr);
+    LocationVar loc = LocationVar::FromProgramValue(reg);
+
+    auto iter = store_.find(loc);
+    if (iter != store_.end())
+    {
+        return iter->second;
+    }
+
+    PointToMap& pt_map = store_[loc];
+    if (isa<Constant>(reg))
+    {
+        pt_map.insert_or_assign(LocationVar{LocationTag::Value, reg}, ctx_->GetSmtSolver().MakeTop());
+    }
+    else if (const Argument* arg_reg = dyn_cast<const Argument>(reg); arg_reg)
+    {
+        assert(!arg_reg->getType()->isPointerTy());
+        pt_map.insert_or_assign(LocationVar{LocationTag::Dynamic, reg}, ctx_->GetSmtSolver().MakeTop());
     }
     else
     {
-        const auto& value_pt_map = store_.at(loc_to_val);
-        for (const auto& [ptr, ptr_constraint] : store_[loc_to_ptr])
-        {
-            auto& ptr_pt_map = store_[ptr];
-            for (auto& [old_val, old_val_constraint] : ptr_pt_map)
-            {
-                old_val_constraint = !ptr_constraint && old_val_constraint;
-            }
-
-            for (const auto& [val, val_constraint] : value_pt_map)
-            {
-                AddPointToEdge(ptr_pt_map, val, ptr_constraint && val_constraint);
-            }
-        }
+        throw "invalid register";
     }
+
+    return pt_map;
 }

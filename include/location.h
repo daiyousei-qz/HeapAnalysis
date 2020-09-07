@@ -44,20 +44,8 @@ public:
         return definition_;
     }
 
-    static LocationVar FromRegister(const llvm::Instruction* reg)
-    {
-        return LocationVar{LocationTag::Register, reg};
-    }
-
     static LocationVar FromProgramValue(const llvm::Value* val)
     {
-        using namespace llvm;
-        if (isa<Constant>(val))
-        {
-            return LocationVar{LocationTag::Value, val};
-        }
-        
-        assert(isa<Instruction>(val) || isa<Argument>(val) || isa<GlobalVariable>(val));
         return LocationVar{LocationTag::Register, val};
     }
 

@@ -12,6 +12,19 @@ void foo(int* ptr, int x, int y)
     }
 }
 
+int buz(int x, int y)
+{
+    if (x > y)
+    {
+        return x;
+    }
+    else
+    {
+        return y;
+    }
+}
+
+// bug for this func
 void* bar()
 {
     int* p[3];

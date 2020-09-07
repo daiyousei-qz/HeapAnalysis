@@ -20,25 +20,22 @@ vector<const Value*> CollectInputPtr(const Function& F)
     vector<const Value*> result;
 
     // collect parameters
-    for (auto& arg : F.args())
+    for (const Argument& arg : F.args())
     {
-        // TODO: could we omit non-ptr variables?
         // because LLVM IR is in SSA form
         // non-ptr argument cannot be updated so alias analysis is inrelevant
-        // if (arg.getType()->isPointerTy())
-        // {
-        //     result.push_back(&arg);
-        // }
-     
-        result.push_back(&arg);
+        if (arg.getType()->isPointerTy())
+        {
+            result.push_back(&arg);
+        }
     }
 
     // collect global variables
-    for (auto& B : F)
+    for (const BasicBlock& B : F)
     {
-        for (auto& I : B)
+        for (const Instruction& I : B)
         {
-            for (Value* val : I.operands())
+            for (const Value* val : I.operands())
             {
                 if (isa<GlobalVariable>(val) && find(result.begin(), result.end(), val) == result.end())
                 {
@@ -51,7 +48,16 @@ vector<const Value*> CollectInputPtr(const Function& F)
     return result;
 }
 
-AbstractStore CreateBootstrapStore(ConstraintEngine& smt_engine, const vector<const llvm::Value*>& inputs)
+const Value* CollectOutput(const Function& F)
+{
+    // TODO: is return
+    const ReturnInst* lastInst = dyn_cast<ReturnInst>(&F.back().back());
+    assert(lastInst != nullptr);
+
+    return lastInst->getReturnValue();
+}
+
+AbstractStore CreateBootstrapStore(ConstraintSolver& smt_engine, const vector<const llvm::Value*>& inputs)
 {
     AbstractStore result;
 
@@ -61,16 +67,16 @@ AbstractStore CreateBootstrapStore(ConstraintEngine& smt_engine, const vector<co
         auto loc_i = LocationVar::FromProgramValue(val_i);
 
         // edges when strictly no alias
-        auto loc = loc_i;
+        auto loc         = loc_i;
         auto pointed_loc = LocationVar{LocationTag::Dynamic, val_i, 0};
-        result[loc] = { {pointed_loc, smt_engine.MakeAliasConstraint(i, i)} };
+        result[loc]      = {{pointed_loc, smt_engine.MakeAliasConstraint(i, i)}};
 
         auto ptr_level = GetPointerNestLevel(val_i->getType());
         for (int k = 0; k < ptr_level; ++k)
         {
-            loc = pointed_loc;
-            pointed_loc = LocationVar{LocationTag::Dynamic, val_i, k+1};
-            result[loc] = { {pointed_loc, smt_engine.MakeTop()} };
+            loc         = pointed_loc;
+            pointed_loc = LocationVar{LocationTag::Dynamic, val_i, k + 1};
+            result[loc] = {{pointed_loc, smt_engine.MakeTop()}};
         }
 
         // edges of alias
@@ -99,13 +105,15 @@ set<ControlFlowEdge> CollectBackwardEdge(const Function& F)
     return set<ControlFlowEdge>(buffer.begin(), buffer.end());
 }
 
-AnalysisContext::AnalysisContext(const Function* func)
+AnalysisContext::AnalysisContext(const shared_ptr<SmtProvider>& smt_engine, const Function* fun)
+    : smt_solver_(smt_engine)
 {
-    this->func      = func;
-    this->inputs    = CollectInputPtr(*func);
-    this->backedges = CollectBackwardEdge(*func);
+    this->func      = fun;
+    this->inputs    = CollectInputPtr(*fun);
+    this->output    = CollectOutput(*fun);
+    this->backedges = CollectBackwardEdge(*fun);
 
-    this->smt_engine_.InitializeInput(this->inputs.size());
+    this->smt_solver_.Initialize(this->inputs.size());
 }
 
 std::shared_ptr<AbstractExecution> AnalysisContext::InitializeExecution(const llvm::BasicBlock* bb)
@@ -119,14 +127,14 @@ std::shared_ptr<AbstractExecution> AnalysisContext::InitializeExecution(const ll
         }
         else
         {
-            result->MergeWith(exec);   
+            result->MergeWith(exec);
         }
     };
 
     // merge result of predecessor's consequent executions
     for (auto pred_bb : llvm::predecessors(bb))
     {
-        bool loopback = backedges.find(std::make_pair(pred_bb, bb)) != backedges.end();
+        bool loopback = backedges.find(make_pair(pred_bb, bb)) != backedges.end();
         if (auto it = exec_results.find(pred_bb); it != exec_results.end())
         {
             merge_exec(*it->second);
@@ -140,7 +148,7 @@ std::shared_ptr<AbstractExecution> AnalysisContext::InitializeExecution(const ll
     // then this is the first basic block of the function
     if (result == nullptr)
     {
-        result = std::make_shared<AbstractExecution>(this, CreateBootstrapStore(smt_engine_, inputs));
+        result = std::make_shared<AbstractExecution>(this, CreateBootstrapStore(smt_solver_, inputs));
     }
 
     result->NormalizeStore();
@@ -162,7 +170,7 @@ std::shared_ptr<AbstractExecution> AnalysisContext::RetrieveExecution(const llvm
 bool AnalysisContext::UpdateExecution(const llvm::BasicBlock* bb, std::shared_ptr<AbstractExecution> new_exec)
 {
     auto& stored_exec = exec_results[bb];
-    
+
     // first run
     if (stored_exec == nullptr)
     {
@@ -171,7 +179,7 @@ bool AnalysisContext::UpdateExecution(const llvm::BasicBlock* bb, std::shared_pt
     }
 
     // consequent run
-    if (!EqualAbstractStore(smt_engine_, stored_exec->GetStore(), new_exec->GetStore()))
+    if (!EqualAbstractStore(smt_solver_, stored_exec->GetStore(), new_exec->GetStore()))
     {
         stored_exec = new_exec;
         return true;
@@ -180,11 +188,22 @@ bool AnalysisContext::UpdateExecution(const llvm::BasicBlock* bb, std::shared_pt
     return false;
 }
 
+std::unique_ptr<FunctionSummary> AnalysisContext::YieldSummary()
+{
+    auto result        = std::make_unique<FunctionSummary>();
+    result->function   = func;
+    result->inputs     = inputs;
+    result->output     = output;
+    result->result     = exec_results.at(&func->back());
+    result->smt_engine = smt_solver_.Provider();
+    return result;
+}
+
 // Analysis
 //
 
 // returns true if consequnt program state is updated
-bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
+bool AnalyzeBlock(const SummaryEnvironment& env, AnalysisContext& ctx, const llvm::BasicBlock* block)
 {
     auto exec = ctx.InitializeExecution(block);
 
@@ -195,48 +214,42 @@ bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
 
     for (const auto& I : *block)
     {
-        LocationVar this_reg{LocationTag::Register, &I};
-
         if (isa<AllocaInst>(I))
         {
-            exec->AssignRegister(this_reg, LocationVar{LocationTag::StackAlloc, &I});
+            exec->AssignRegister(&I, LocationVar{LocationTag::StackAlloc, &I});
         }
         else if (IsMallocCall(&I))
         {
-            exec->AssignRegister(this_reg, LocationVar{LocationTag::HeapAlloc, &I});
+            exec->AssignRegister(&I, LocationVar{LocationTag::HeapAlloc, &I});
         }
         else if (isa<BitCastInst>(&I))
         {
             // TODO:
-            exec->AliasRegister(this_reg, LocationVar::FromProgramValue(I.getOperand(0)));
+            exec->AliasRegister(&I, I.getOperand(0));
         }
         else if (isa<GetElementPtrInst>(&I))
         {
             // TODO: mark summary location
-            exec->AliasRegister(this_reg, LocationVar::FromProgramValue(I.getOperand(0)));
+            exec->AliasRegister(&I, I.getOperand(0));
         }
         else if (auto storeInst = dyn_cast<StoreInst>(&I))
         {
-            auto loc_to_val = LocationVar::FromProgramValue(storeInst->getOperand(0));
-            auto loc_to_ptr = LocationVar::FromProgramValue(storeInst->getOperand(1));
-
-            exec->WriteStore(loc_to_val, loc_to_ptr);
+            exec->WriteStore(storeInst->getOperand(0), storeInst->getOperand(1));
         }
         else if (auto loadInst = dyn_cast<LoadInst>(&I))
         {
-            auto loc_to_ptr = LocationVar::FromProgramValue(loadInst->getOperand(0));
-
-            exec->ReadStore(this_reg, loc_to_ptr);
+            exec->ReadStore(&I, loadInst->getOperand(0));
         }
         else if (auto callInst = dyn_cast<CallInst>(&I))
         {
-            throw "no impl";
+            const Function* callee         = callInst->getCalledFunction();
+            std::vector<const Value*> args = std::vector<const Value*>(callInst->arg_begin(), callInst->arg_end());
+            exec->Invoke(callInst, args.data(), *env.analysis_cache.at(callee));
         }
         else
         {
-            exec->AssignRegister(this_reg, LocationVar{LocationTag::Value, &I});
+            exec->AssignRegister(&I, LocationVar{LocationTag::Value, &I});
         }
-        
     }
 
     exec->NormalizeStore();
@@ -249,21 +262,26 @@ bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
     return ctx.UpdateExecution(block, exec);
 }
 
-void AnalyzeFunction(SummaryEnvironment& env, const llvm::Function* func)
+void SummaryEnvironment::Analyze(const llvm::Function* fun)
 {
+#ifdef MODULE_DEBUG_MODE
+    llvm::outs() << "---------\n";
+    llvm::outs() << *fun << "\n";
+#endif
+
     // TODO: should be retrieved from env?
-    auto ctx = std::make_unique<AnalysisContext>(func);
+    auto ctx = std::make_unique<AnalysisContext>(smt_engine, fun);
 
     // TODO: should there be a workset?
     queue<const BasicBlock*> worklist;
-    worklist.push(&func->front());
+    worklist.push(&fun->front());
 
     while (!worklist.empty())
     {
         auto block = worklist.front();
         worklist.pop();
 
-        if (AnalyzeBlock(*ctx, block))
+        if (AnalyzeBlock(*this, *ctx, block))
         {
             for (auto succ_block : successors(block))
             {
@@ -273,10 +291,10 @@ void AnalyzeFunction(SummaryEnvironment& env, const llvm::Function* func)
     }
 
 #ifdef MODULE_DEBUG_MODE
-    auto term_exec = ctx->RetrieveExecution(&func->back());
-    llvm::outs() << "---------\n";
-    llvm::outs() << *func << "\n";
+    auto term_exec = ctx->RetrieveExecution(&fun->back());
     //llvm::outs() << ToString(*term_exec);
     DebugPrint(*term_exec);
 #endif
+
+    analysis_cache[fun] = ctx->YieldSummary();
 }

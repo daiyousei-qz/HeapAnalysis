@@ -1,32 +1,32 @@
 #include "constraint.h"
 #include "z3++.h"
 
-bool ConstraintEngine::TestSatisfiability(const Constraint& c)
+bool ConstraintSolver::TestSatisfiability(const Constraint& c)
 {
-    auto expr = c.body;
-    return solver_.check(1, &expr) == z3::sat;
+    z3::expr c_expr = c.body;
+    return solver_.check(1, &c_expr) == z3::sat;
 }
 
-bool ConstraintEngine::TestValidity(const Constraint& c)
+bool ConstraintSolver::TestValidity(const Constraint& c)
 {
-    auto expr = !c.body;
-    return solver_.check(1, &expr) == z3::unsat;
+    z3::expr c_expr = !c.body;
+    return solver_.check(1, &c_expr) == z3::unsat;
 }
 
-bool ConstraintEngine::TestEquivalence(const Constraint& c0, const Constraint& c1)
+bool ConstraintSolver::TestEquivalence(const Constraint& c0, const Constraint& c1)
 {
     auto imply01 = z3::implies(c0.body, c1.body);
     auto imply10 = z3::implies(c1.body, c0.body);
-    auto expr = !(imply01 && imply10);
-    
+    auto expr    = !(imply01 && imply10);
+
     return solver_.check(1, &expr) == z3::unsat;
 }
 
-Constraint ConstraintEngine::MakeTop()
+Constraint ConstraintSolver::MakeTop()
 {
-    return Constraint{ ctx_.bool_val(true) };
+    return Constraint{provider_->Context().bool_val(true)};
 }
-Constraint ConstraintEngine::MakeBottom()
+Constraint ConstraintSolver::MakeBottom()
 {
-    return Constraint{ ctx_.bool_val(false) };
+    return Constraint{provider_->Context().bool_val(false)};
 }

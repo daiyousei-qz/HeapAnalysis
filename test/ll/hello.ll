@@ -3,6 +3,7 @@ source_filename = "./src/hello.c"
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-linux-gnu"
 
+@l.s = internal global i32 0, align 4
 @global = common dso_local global i32 0, align 4
 
 ; Function Attrs: noinline nounwind optnone uwtable
@@ -92,59 +93,33 @@ define dso_local void @h(i32**, i32**, i8*, i8*) #0 {
 }
 
 ; Function Attrs: noinline nounwind optnone uwtable
-define dso_local void @k(i32) #0 {
-  %2 = alloca i32, align 4
-  %3 = alloca i32, align 4
-  %4 = alloca i32, align 4
-  store i32 %0, i32* %2, align 4
-  %5 = load i32, i32* %2, align 4
-  %6 = add nsw i32 %5, 1
-  store i32 %6, i32* %3, align 4
-  %7 = load i32, i32* %3, align 4
-  %8 = add nsw i32 %7, 1
-  store i32 %8, i32* %4, align 4
+define dso_local void @k(i32*, i32*) #0 {
+  %3 = alloca i32*, align 8
+  %4 = alloca i32*, align 8
+  %5 = alloca i32, align 4
+  store i32* %0, i32** %3, align 8
+  store i32* %1, i32** %4, align 8
+  %6 = load i32*, i32** %3, align 8
+  %7 = load i32, i32* %6, align 4
+  store i32 %7, i32* %5, align 4
+  %8 = load i32*, i32** %4, align 8
+  %9 = load i32, i32* %8, align 4
+  %10 = load i32*, i32** %3, align 8
+  store i32 %9, i32* %10, align 4
+  %11 = load i32, i32* %5, align 4
+  %12 = load i32*, i32** %4, align 8
+  store i32 %11, i32* %12, align 4
   ret void
 }
 
 ; Function Attrs: noinline nounwind optnone uwtable
-define dso_local i32 @m(i32) #0 {
+define dso_local void @l(i32) #0 {
   %2 = alloca i32, align 4
-  %3 = alloca i32, align 4
   store i32 %0, i32* %2, align 4
-  %4 = load i32, i32* @global, align 4
-  store i32 %4, i32* %3, align 4
-  %5 = load i32, i32* %2, align 4
-  store i32 %5, i32* @global, align 4
-  %6 = load i32, i32* %3, align 4
-  ret i32 %6
-}
-
-; Function Attrs: noinline nounwind optnone uwtable
-define dso_local void @p(i32*, i32, i32) #0 {
-  %4 = alloca i32*, align 8
-  %5 = alloca i32, align 4
-  %6 = alloca i32, align 4
-  store i32* %0, i32** %4, align 8
-  store i32 %1, i32* %5, align 4
-  store i32 %2, i32* %6, align 4
-  %7 = load i32, i32* %5, align 4
-  %8 = load i32, i32* %6, align 4
-  %9 = icmp sgt i32 %7, %8
-  br i1 %9, label %10, label %13
-
-10:                                               ; preds = %3
-  %11 = load i32, i32* %5, align 4
-  %12 = load i32*, i32** %4, align 8
-  store i32 %11, i32* %12, align 4
-  br label %16
-
-13:                                               ; preds = %3
-  %14 = load i32, i32* %6, align 4
-  %15 = load i32*, i32** %4, align 8
-  store i32 %14, i32* %15, align 4
-  br label %16
-
-16:                                               ; preds = %13, %10
+  %3 = load i32, i32* %2, align 4
+  store i32 %3, i32* @global, align 4
+  %4 = load i32, i32* %2, align 4
+  store i32 %4, i32* @l.s, align 4
   ret void
 }
 
