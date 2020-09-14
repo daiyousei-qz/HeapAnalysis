@@ -29,7 +29,7 @@ class LocationVar
 {
 public:
     LocationVar(LocationTag tag, const llvm::Value* def, int deref_level = 0)
-        : tag_(tag), definition_(def), deref_level_(deref_level), context_(nullptr)
+        : tag_(tag), definition_(def), deref_level_(deref_level)
     {
         assert(tag == LocationTag::Dynamic || deref_level == 0);
     }
@@ -49,14 +49,14 @@ public:
         return definition_;
     }
 
-    auto GetContext() const noexcept
-    {
-        return context_;
-    }
-
     static LocationVar FromProgramValue(const llvm::Value* val)
     {
         return LocationVar{LocationTag::Register, val};
+    }
+
+    static LocationVar FromRuntimeMemory(const llvm::Value* reg, int deref_level)
+    {
+        return LocationVar{LocationTag::Dynamic, reg, deref_level};
     }
 
 private:
@@ -67,7 +67,6 @@ private:
     LocationTag tag_;
     int deref_level_;
     const llvm::Value* definition_;
-    const llvm::Function* context_; // need this?
 };
 
 inline bool operator==(LocationVar lhs, LocationVar rhs) noexcept

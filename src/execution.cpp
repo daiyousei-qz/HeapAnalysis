@@ -2,10 +2,11 @@
 #include "analysis.h"
 #include "constraint.h"
 #include "llvm-utils.h"
+#include "fmt-utils.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Function.h"
 #include <map>
-#include <queue>
+#include <deque>
 
 using namespace std;
 using namespace llvm;
@@ -179,6 +180,14 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign, const llvm::Value*
         }
     }
 
+#ifdef MODULE_DEBUG_MODE
+    fmt::print("[Constraint mapping]\n");
+    for (int i = 0; i < zsrc.size(); ++i)
+    {
+        fmt::print("{} <-> {}\n", zsrc[i].to_string(), zdst[i].to_string());
+    }
+#endif
+
     // TODO: deal with ast distinct?
     AbstractExecution exec_callee = *summary.result;
     for (auto& [loc_src, pt_map] : exec_callee.store_)
@@ -193,8 +202,8 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign, const llvm::Value*
     //
     std::unordered_map<LocationVar, PointToMap> loc_mappings_pa;
     std::unordered_map<LocationVar, PointToMap> loc_mappings_ap;
-    std::queue<std::pair<LocationVar, Constraint>> loc_args;
-    std::queue<std::pair<LocationVar, Constraint>> loc_arg_pointees;
+    std::deque<std::pair<LocationVar, Constraint>> loc_args;
+    std::deque<std::pair<LocationVar, Constraint>> loc_arg_pointees;
     for (int i = 0; i < num_args; ++i)
     {
         const llvm::Value* input_param = summary.inputs[i];
@@ -202,12 +211,14 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign, const llvm::Value*
 
         // TODO: should we add register location variable mapping?
         //       i.e. REG_P ->(T) REG_A
+        loc_args.clear();
+        loc_arg_pointees.clear();
         for (const auto& [loc_a_pointee, loc_a_constraint] : store_.at(LocationVar::FromProgramValue(reg_args[i])))
         {
-            loc_arg_pointees.emplace(loc_a_pointee, loc_a_constraint);
+            loc_args.emplace_back(loc_a_pointee, loc_a_constraint);
         }
 
-        for (int deref_level = 0; deref_level < ptr_level; ++deref_level)
+        for (int deref_level = 0; deref_level <= ptr_level; ++deref_level)
         {
             LocationVar loc_p  = LocationVar{LocationTag::Dynamic, input_param, deref_level};
             PointToMap& pt_map = loc_mappings_pa[loc_p];
@@ -216,20 +227,39 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign, const llvm::Value*
             while (!loc_args.empty())
             {
                 auto [loc_a, constraint] = std::move(loc_args.front());
-                loc_args.pop();
+                loc_args.pop_front();
 
-                for (const auto& [loc_a_pointee, loc_a_constraint] : store_.at(loc_a))
+#ifdef MODULE_DEBUG_MODE
+                constraint.Simplify();
+#endif
+
+                auto iter_pt_map_a = store_.find(loc_a);
+                if (iter_pt_map_a != store_.end())
                 {
-                    loc_arg_pointees.emplace(loc_a_pointee, constraint && loc_a_constraint);
+                    for (const auto& [loc_a_pointee, loc_a_constraint] : iter_pt_map_a->second)
+                    {
+                        loc_arg_pointees.emplace_back(loc_a_pointee, constraint && loc_a_constraint);
+                    }
                 }
 
                 pt_map.insert_or_assign(loc_a, constraint);
-                loc_mappings_ap[loc_p].insert_or_assign(loc_p, constraint);
+                loc_mappings_ap[loc_a].insert_or_assign(loc_p, constraint);
             }
 
             std::swap(loc_args, loc_arg_pointees);
         }
     }
+
+#ifdef MODULE_DEBUG_MODE
+    fmt::print("[Location mapping]\n");
+    for (const auto& [loc_p, eq_map] : loc_mappings_pa)
+    {
+        for (const auto& [loc_a, eq_constraint] : eq_map)
+        {
+            fmt::print("{} <-> {} | {}\n", loc_p, loc_a, eq_constraint);
+        }
+    }
+#endif
 
     // step 3: merge callee's heap into this execution
     //
@@ -246,24 +276,43 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign, const llvm::Value*
             {
                 if (val_p.GetTag() == LocationTag::Dynamic)
                 {
-                    for (const auto& [val_a, val_a_constraint] : loc_mappings_pa.at(val_p))
+                    auto iter_pa_mapping = loc_mappings_pa.find(val_p);
+                    if (iter_pa_mapping != loc_mappings_pa.end())
                     {
-                        new_pt_map.insert_or_assign(val_a, eq_constraint && val_p_constraint && val_a_constraint);
+                        for (const auto& [val_a, mapping_constraint] : iter_pa_mapping->second)
+                        {
+                            // fmt::print("+++{} <-> {}\n", loc_a, loc_p);
+                            // fmt::print("  => {} <-> {}\n", val_a, val_p);
+                            // fmt::print("eq {}\n", eq_constraint);
+                            // fmt::print("p {}\n", val_p_constraint);
+                            // fmt::print("a {}\n", mapping_constraint);
+                            // fmt::print("---\n", loc_a);
+
+                            AddPointToEdge(new_pt_map, val_a, eq_constraint && val_p_constraint && mapping_constraint);
+                        }
                     }
                 }
                 else
                 {
                     // TODO: add a tag to differentiate
-                    new_pt_map.insert_or_assign(val_p, eq_constraint && val_p_constraint);
+                    AddPointToEdge(new_pt_map, val_p, eq_constraint && val_p_constraint);
                 }
             }
         }
 
         for (const auto& [val_a, val_a_constraint] : store_[loc_a])
         {
-            new_pt_map.insert_or_assign(val_a, !pass_in_constraint && val_a_constraint);
+            AddPointToEdge(new_pt_map, val_a, !pass_in_constraint && val_a_constraint);
         }
 
+#ifdef MODULE_DEBUG_MODE
+        fmt::print("rewriting ptmap of {}\n", loc_a);
+        for (auto& [loc_target, constraint] : new_pt_map)
+        {
+            constraint.Simplify();
+            fmt::print("  -> {} ? {}\n", loc_target, constraint);
+        }
+#endif
         store_[loc_a] = std::move(new_pt_map);
     }
 }
