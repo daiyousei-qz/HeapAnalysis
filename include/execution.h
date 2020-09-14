@@ -73,6 +73,7 @@ public:
 private:
     PointToMap& LookupRegister(const llvm::Value* reg);
 
+    // TODO: set nullptr for execution in summary
     AnalysisContext* ctx_;
 
     std::unordered_map<const llvm::Value*, const llvm::Value*> alias_map_;

@@ -20,11 +20,16 @@ enum class LocationTag
     HeapAlloc,
 };
 
+// A location variable is composed with 4 components
+// Tag: type of the location
+// Definition: the specific llvm::Value that this location is defined
+// Dereference Level: to differentiate pointed locations that have the same definition
+// Context: the function that we are working on(do we actually need this, may be implied)
 class LocationVar
 {
 public:
     LocationVar(LocationTag tag, const llvm::Value* def, int deref_level = 0)
-        : tag_(tag), definition_(def), deref_level_(deref_level)
+        : tag_(tag), definition_(def), deref_level_(deref_level), context_(nullptr)
     {
         assert(tag == LocationTag::Dynamic || deref_level == 0);
     }
@@ -44,6 +49,11 @@ public:
         return definition_;
     }
 
+    auto GetContext() const noexcept
+    {
+        return context_;
+    }
+
     static LocationVar FromProgramValue(const llvm::Value* val)
     {
         return LocationVar{LocationTag::Register, val};
@@ -57,13 +67,12 @@ private:
     LocationTag tag_;
     int deref_level_;
     const llvm::Value* definition_;
+    const llvm::Function* context_; // need this?
 };
 
 inline bool operator==(LocationVar lhs, LocationVar rhs) noexcept
 {
-    return lhs.tag_ == rhs.tag_ 
-        && lhs.deref_level_ == rhs.deref_level_ 
-        && lhs.definition_ == rhs.definition_;
+    return lhs.tag_ == rhs.tag_ && lhs.deref_level_ == rhs.deref_level_ && lhs.definition_ == rhs.definition_;
 }
 inline bool operator!=(LocationVar lhs, LocationVar rhs) noexcept
 {
@@ -78,9 +87,7 @@ namespace std
         size_t operator()(LocationVar x) const noexcept
         {
             // TODO: use better hash combination algorithm
-            return hash<LocationTag>()(x.tag_) 
-                ^ hash<int>()(x.deref_level_) 
-                ^ hash<const llvm::Value*>()(x.definition_);
+            return hash<LocationTag>()(x.tag_) ^ hash<int>()(x.deref_level_) ^ hash<const llvm::Value*>()(x.definition_);
         }
     };
 } // namespace std

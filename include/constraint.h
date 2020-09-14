@@ -17,6 +17,7 @@ private:
             alias_locs_.push_back(ctx_.int_const(name.c_str()));
         }
     }
+
 public:
     z3::context& Context() noexcept
     {
@@ -25,8 +26,8 @@ public:
 
     const z3::expr& AliasLocation(int i)
     {
-        ReserveAliasVariables(i+1);
-        
+        ReserveAliasVariables(i + 1);
+
         return alias_locs_[i];
     }
 
@@ -34,13 +35,23 @@ public:
     {
         ReserveAliasVariables(n_args);
 
-        return std::vector<z3::expr>{alias_locs_.begin(), alias_locs_.begin()+n_args};
+        return std::vector<z3::expr>{alias_locs_.begin(), alias_locs_.begin() + n_args};
     }
 };
 
 struct Constraint
 {
+public:
     z3::expr body;
+
+public:
+    Constraint(z3::expr e)
+        : body(std::move(e)) {}
+
+    Constraint(const Constraint&) = default;
+    Constraint(Constraint&&)      = default;
+    Constraint& operator=(const Constraint&) = default;
+    Constraint& operator=(Constraint&&) = default;
 
     void Simplify()
     {
@@ -64,7 +75,7 @@ public:
 
         for (int i = 1; i < n_args; ++i)
         {
-            solver_.add(input_loc_vars_[i] >= input_loc_vars_[i-1]);
+            solver_.add(input_loc_vars_[i] >= input_loc_vars_[i - 1]);
         }
     }
 
@@ -84,6 +95,15 @@ public:
     {
         assert(i != j);
         solver_.add(input_loc_vars_[i] != input_loc_vars_[j]);
+    }
+
+    // TODO: try not to expose z3 interface
+    // assuming i >= j
+    z3::expr MakeAliasLocationExpr(int i, int j)
+    {
+        assert(i > j);
+
+        return input_loc_vars_[i] == input_loc_vars_[j];
     }
 
     // assuming i >= j
@@ -108,6 +128,11 @@ public:
     const auto& Provider()
     {
         return provider_;
+    }
+
+    auto& Context()
+    {
+        return provider_->Context();
     }
 
 private:
