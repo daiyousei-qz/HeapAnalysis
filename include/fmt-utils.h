@@ -90,7 +90,7 @@ inline std::string ToString(const AbstractExecution& exec)
     return std::string(buf.data(), buf.size());
 }
 
-inline void DebugPrint(const AbstractExecution& exec)
+inline void DebugPrint(const AbstractExecution& exec, bool output_graphviz = false)
 {
     const auto& ctx    = exec.GetContext();
     const auto& inputs = ctx.GetInputs();
@@ -116,6 +116,11 @@ inline void DebugPrint(const AbstractExecution& exec)
         important_locs.push(loc_reg);
     }
 
+    fmt::print("Abstruct Heap:\n");
+    if (output_graphviz)
+    {
+        fmt::print("digraph G {{\n");
+    }
     while (!important_locs.empty())
     {
         auto loc = important_locs.front();
@@ -127,10 +132,20 @@ inline void DebugPrint(const AbstractExecution& exec)
             continue;
         }
 
-        fmt::print("| {}\n", loc);
+        if (!output_graphviz)
+        {
+            fmt::print("| {}\n", loc);
+        }
         for (const auto& [target_loc, constraint] : it->second)
         {
-            fmt::print("  -> {} ? {}\n", target_loc, constraint);
+            if (output_graphviz)
+            {
+                fmt::print("  \"{}\" -> \"{}\" [label=\"{}\"];\n", loc, target_loc, constraint);
+            }
+            else
+            {
+                fmt::print("  -> {} ? {}\n", target_loc, constraint);
+            }
 
             if (known_locs.find(target_loc) == known_locs.end())
             {
@@ -138,5 +153,9 @@ inline void DebugPrint(const AbstractExecution& exec)
                 important_locs.push(target_loc);
             }
         }
+    }
+    if (output_graphviz)
+    {
+        fmt::print("}}\n");
     }
 }
