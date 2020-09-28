@@ -37,7 +37,8 @@ vector<const Value*> CollectInputPtr(const Function& F)
         {
             for (const Value* val : I.operands())
             {
-                if (isa<GlobalVariable>(val) && find(result.begin(), result.end(), val) == result.end())
+                if (isa<GlobalVariable>(val) &&
+                    find(result.begin(), result.end(), val) == result.end())
                 {
                     result.push_back(val);
                 }
@@ -57,7 +58,8 @@ const Value* CollectOutput(const Function& F)
     return lastInst->getReturnValue();
 }
 
-AbstractStore CreateBootstrapStore(ConstraintSolver& smt_engine, const vector<const llvm::Value*>& inputs)
+AbstractStore CreateBootstrapStore(ConstraintSolver& smt_engine,
+                                   const vector<const llvm::Value*>& inputs)
 {
     AbstractStore result;
 
@@ -69,7 +71,7 @@ AbstractStore CreateBootstrapStore(ConstraintSolver& smt_engine, const vector<co
         // edges when strictly no alias
         auto loc         = loc_i;
         auto pointed_loc = LocationVar{LocationTag::Dynamic, val_i, 0};
-        result[loc]      = {{pointed_loc, smt_engine.MakeAliasConstraint(i, i)}};
+        result[loc] = {{pointed_loc, smt_engine.MakeAliasConstraint(i, i)}};
 
         auto ptr_level = GetPointerNestLevel(val_i->getType());
         for (int k = 0; k < ptr_level; ++k)
@@ -82,7 +84,8 @@ AbstractStore CreateBootstrapStore(ConstraintSolver& smt_engine, const vector<co
         // edges of alias
         for (int j = 0; j < i; ++j)
         {
-            // TODO: add constraint term to take typing input alias consideration?
+            // TODO: add constraint term to take typing input alias
+            // consideration?
             // TODO: make this an togglable option
             if (inputs[i]->getType() != inputs[j]->getType())
             {
@@ -90,7 +93,8 @@ AbstractStore CreateBootstrapStore(ConstraintSolver& smt_engine, const vector<co
             }
 
             auto alias_loc = LocationVar{LocationTag::Dynamic, inputs[j], 0};
-            result[loc_i].insert_or_assign(alias_loc, smt_engine.MakeAliasConstraint(i, j));
+            result[loc_i].insert_or_assign(
+                alias_loc, smt_engine.MakeAliasConstraint(i, j));
         }
     }
 
@@ -105,7 +109,21 @@ set<ControlFlowEdge> CollectBackwardEdge(const Function& F)
     return set<ControlFlowEdge>(buffer.begin(), buffer.end());
 }
 
-AnalysisContext::AnalysisContext(const shared_ptr<SmtProvider>& smt_engine, const Function* fun)
+AnalysisContext::AnalysisContext(shared_ptr<SummaryEnvironment> env,
+                                 const Function* func)
+    : smt_solver_(env->smt_engind)
+{
+    this->env       = std::move(env);
+    this->func      = func;
+    this->inputs    = CollectInputPtr(*func);
+    this->output    = CollectOutput(*func);
+    this->backedges = CollectBackwardEdge(*func);
+
+    this->smt_solver_.Initialize(this->inputs.size());
+}
+
+AnalysisContext::AnalysisContext(const shared_ptr<SmtProvider>& smt_engine,
+                                 const Function* fun)
     : smt_solver_(smt_engine)
 {
     this->func      = fun;
@@ -116,7 +134,8 @@ AnalysisContext::AnalysisContext(const shared_ptr<SmtProvider>& smt_engine, cons
     this->smt_solver_.Initialize(this->inputs.size());
 }
 
-std::shared_ptr<AbstractExecution> AnalysisContext::InitializeExecution(const llvm::BasicBlock* bb)
+std::shared_ptr<AbstractExecution>
+AnalysisContext::InitializeExecution(const llvm::BasicBlock* bb)
 {
     std::shared_ptr<AbstractExecution> result = nullptr;
 
@@ -134,7 +153,8 @@ std::shared_ptr<AbstractExecution> AnalysisContext::InitializeExecution(const ll
     // merge result of predecessor's consequent executions
     for (auto pred_bb : llvm::predecessors(bb))
     {
-        bool loopback = backedges.find(make_pair(pred_bb, bb)) != backedges.end();
+        bool loopback =
+            backedges.find(make_pair(pred_bb, bb)) != backedges.end();
         if (auto it = exec_results.find(pred_bb); it != exec_results.end())
         {
             merge_exec(*it->second);
@@ -148,14 +168,16 @@ std::shared_ptr<AbstractExecution> AnalysisContext::InitializeExecution(const ll
     // then this is the first basic block of the function
     if (result == nullptr)
     {
-        result = std::make_shared<AbstractExecution>(this, CreateBootstrapStore(smt_solver_, inputs));
+        result = std::make_shared<AbstractExecution>(
+            this, CreateBootstrapStore(smt_solver_, inputs));
     }
 
     result->NormalizeStore();
     return result;
 }
 
-std::shared_ptr<AbstractExecution> AnalysisContext::RetrieveExecution(const llvm::BasicBlock* bb)
+std::shared_ptr<AbstractExecution>
+AnalysisContext::RetrieveExecution(const llvm::BasicBlock* bb)
 {
     if (auto it = exec_results.find(bb); it != exec_results.end())
     {
@@ -167,7 +189,8 @@ std::shared_ptr<AbstractExecution> AnalysisContext::RetrieveExecution(const llvm
     }
 }
 
-bool AnalysisContext::UpdateExecution(const llvm::BasicBlock* bb, std::shared_ptr<AbstractExecution> new_exec)
+bool AnalysisContext::UpdateExecution(
+    const llvm::BasicBlock* bb, std::shared_ptr<AbstractExecution> new_exec)
 {
     auto& stored_exec = exec_results[bb];
 
@@ -179,7 +202,8 @@ bool AnalysisContext::UpdateExecution(const llvm::BasicBlock* bb, std::shared_pt
     }
 
     // consequent run
-    if (!EqualAbstractStore(smt_solver_, stored_exec->GetStore(), new_exec->GetStore()))
+    if (!EqualAbstractStore(smt_solver_, stored_exec->GetStore(),
+                            new_exec->GetStore()))
     {
         stored_exec = new_exec;
         return true;
@@ -203,11 +227,11 @@ std::unique_ptr<FunctionSummary> AnalysisContext::YieldSummary()
 //
 
 // returns true if consequnt program state is updated
-bool AnalyzeBlock(const SummaryEnvironment& env, AnalysisContext& ctx, const llvm::BasicBlock* block)
+bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
 {
     auto exec = ctx.InitializeExecution(block);
 
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
     // llvm::outs() << "===========================================\n";
     // llvm::outs() << ToString(*exec);
 #endif
@@ -234,7 +258,8 @@ bool AnalyzeBlock(const SummaryEnvironment& env, AnalysisContext& ctx, const llv
         }
         else if (auto storeInst = dyn_cast<StoreInst>(&I))
         {
-            exec->WriteStore(storeInst->getOperand(0), storeInst->getOperand(1));
+            exec->WriteStore(storeInst->getOperand(0),
+                             storeInst->getOperand(1));
         }
         else if (auto loadInst = dyn_cast<LoadInst>(&I))
         {
@@ -243,7 +268,8 @@ bool AnalyzeBlock(const SummaryEnvironment& env, AnalysisContext& ctx, const llv
         else if (auto callInst = dyn_cast<CallInst>(&I))
         {
             const Function* callee         = callInst->getCalledFunction();
-            std::vector<const Value*> args = std::vector<const Value*>(callInst->arg_begin(), callInst->arg_end());
+            std::vector<const Value*> args = std::vector<const Value*>(
+                callInst->arg_begin(), callInst->arg_end());
             exec->Invoke(callInst, args.data(), *env.analysis_cache.at(callee));
         }
         else
@@ -254,7 +280,7 @@ bool AnalyzeBlock(const SummaryEnvironment& env, AnalysisContext& ctx, const llv
 
     exec->NormalizeStore();
 
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
     // llvm::outs() << "---------\n";
     // llvm::outs() << ToString(*exec);
 #endif
@@ -262,18 +288,20 @@ bool AnalyzeBlock(const SummaryEnvironment& env, AnalysisContext& ctx, const llv
     return ctx.UpdateExecution(block, exec);
 }
 
-void SummaryEnvironment::Analyze(const llvm::Function* fun)
+std::unique_ptr<FunctionSummary>
+AnalyzeFunction(const SummaryEnvironment& env,
+                std::stack<const Function*>& call_chain, const Function* func)
 {
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
     llvm::outs() << "---------\n";
     llvm::outs() << *fun << "\n";
 #endif
 
     // TODO: should be retrieved from env?
-    auto ctx = std::make_unique<AnalysisContext>(smt_engine, fun);
+    AnalysisContext ctx{&env, func};
 
     // TODO: should there be a workset?
-    queue<const BasicBlock*> worklist;
+    std::queue<const BasicBlock*> worklist;
     worklist.push(&fun->front());
 
     while (!worklist.empty())
@@ -281,7 +309,7 @@ void SummaryEnvironment::Analyze(const llvm::Function* fun)
         auto block = worklist.front();
         worklist.pop();
 
-        if (AnalyzeBlock(*this, *ctx, block))
+        if (AnalyzeBlock(*this, ctx, block))
         {
             for (auto succ_block : successors(block))
             {
@@ -290,11 +318,11 @@ void SummaryEnvironment::Analyze(const llvm::Function* fun)
         }
     }
 
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
     auto term_exec = ctx->RetrieveExecution(&fun->back());
-    //llvm::outs() << ToString(*term_exec);
-    DebugPrint(*term_exec);
+    // llvm::outs() << ToString(*term_exec);
+    DebugPrint(*term_exec, false);
 #endif
 
-    analysis_cache[fun] = ctx->YieldSummary();
+    return ctx.YieldSummary();
 }

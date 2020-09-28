@@ -18,6 +18,9 @@ bool EqualAbstractStore(ConstraintSolver& smt_engine, const AbstractStore& s1, c
 // merge point-to graphs into s1
 void MergeAbstractStore(AbstractStore& s1, const AbstractStore& s2);
 
+/**
+ * An `AbstractExecution` is where analysis states are stored and static interpretations are performed
+ */
 class AbstractExecution
 {
 public:
