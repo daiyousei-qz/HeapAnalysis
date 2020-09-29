@@ -83,7 +83,7 @@ namespace fmt
             case LocationTag::Value:
             case LocationTag::StackAlloc:
             case LocationTag::HeapAlloc:
-                return format_to(ctx.out(), "{}", *c.Definition());
+                return format_to(ctx.out(), "{}@{}", *c.Definition(), c.CallPoint());
 
             default:
             {
@@ -96,7 +96,14 @@ namespace fmt
                     }
                 }
 
-                return format_to(output_iter, "{}", c.Definition()->getName().str());
+                if (!c.Definition()->getName().empty())
+                {
+                    return format_to(output_iter, "{}", c.Definition()->getName().str());
+                }
+                else
+                {
+                    return format_to(output_iter, "{}", *c.Definition());
+                }
             }
             }
 
@@ -108,19 +115,72 @@ namespace fmt
     };
 } // namespace fmt
 
-inline std::string ToString(const AbstractExecution& exec)
+inline void DebugPrintAll(const AbstractExecution& exec, bool output_graphviz = false)
 {
-    fmt::memory_buffer buf;
-    fmt::format_to(buf, "AbstractExecution\n");
+    const auto& ctx       = exec.GetContext();
+    const auto& store     = exec.GetStore();
+    const auto& alias_map = exec.GetAliasMap();
+    const auto& inputs    = ctx.GetInputs();
+    const auto& output    = ctx.GetReturnValue();
+
+    std::unordered_multimap<const llvm::Value*, const llvm::Value*> reverse_alias_map;
+    for (auto [val, canonical_val] : alias_map)
+    {
+        reverse_alias_map.insert(std::pair{canonical_val, val});
+    }
+
+    fmt::print("AbstractExecution:\n");
+    if (output_graphviz)
+    {
+        fmt::print("digraph G {{\n");
+    }
+
+    // legend for constraint terms
+    for (int i = 0; i < inputs.size(); ++i)
+    {
+        fmt::print("\"x{}: {}\" [shape=box]\n", i, LocationVar::FromRegister(inputs[i]));
+    }
+    fmt::print("\n");
+
     for (const auto& [src_loc, pt_map] : exec.GetStore())
     {
-        fmt::format_to(buf, "| {}\n", src_loc);
+        if (!output_graphviz)
+        {
+            fmt::print("| {}\n", src_loc);
+        }
         for (const auto& [target_loc, constraint] : pt_map)
         {
-            fmt::format_to(buf, "  -> {} ? {}\n", target_loc, constraint);
+            if (output_graphviz)
+            {
+                fmt::print("  \"{}\" -> \"{}\" [label=\"{}\"];\n", src_loc, target_loc, constraint);
+            }
+            else
+            {
+                fmt::print("  -> {} ? {}\n", target_loc, constraint);
+            }
+
+            auto [iter_begin, iter_end] = reverse_alias_map.equal_range(src_loc.Definition());
+            for (auto iter = iter_begin; iter != iter_end; ++iter)
+            {
+                const llvm::Value* alias_src_def = iter->second;
+                if (output_graphviz)
+                {
+                    fmt::print("  \"{}\" -> \"{}\" [label=\"{}\"];\n",
+                               LocationVar{src_loc.Tag(), alias_src_def, src_loc.PlaceholderId()},
+                               target_loc, constraint);
+                }
+                else
+                {
+                    fmt::print("  -> {} ? {}\n", target_loc, constraint);
+                }
+            }
         }
     }
-    return std::string(buf.data(), buf.size());
+
+    if (output_graphviz)
+    {
+        fmt::print("}}\n");
+    }
 }
 
 inline void DebugPrint(const AbstractExecution& exec, bool output_graphviz = false)
@@ -150,10 +210,20 @@ inline void DebugPrint(const AbstractExecution& exec, bool output_graphviz = fal
     }
 
     fmt::print("Abstruct Heap:\n");
+
     if (output_graphviz)
     {
         fmt::print("digraph G {{\n");
     }
+
+    // legend for constraint terms
+    for (int i = 0; i < inputs.size(); ++i)
+    {
+        fmt::print("\"x{}: {}\" [shape=box]\n", i, LocationVar::FromRegister(inputs[i]));
+    }
+    fmt::print("\n");
+
+    // point-to graph
     while (!important_locs.empty())
     {
         auto loc = important_locs.front();

@@ -49,12 +49,12 @@ private:
         int placeholder_id_;
     };
 
+public:
     LocationVar(LocationTag tag, const llvm::Value* def, int id)
         : tag_(tag), definition_(def), placeholder_id_(id)
     {
     }
 
-public:
     const llvm::Value* Definition() const noexcept { return definition_; }
 
     LocationTag Tag() const noexcept { return tag_; }

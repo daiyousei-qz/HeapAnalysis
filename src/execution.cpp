@@ -163,20 +163,8 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
     z3::expr_vector zdst{ctx_->GetSmtSolver().Context()};
     for (int i = 1; i < summary.inputs.size(); ++i)
     {
-        // non-pointer type won't alias
-        if (!summary.inputs[i]->getType()->isPointerTy())
-        {
-            continue;
-        }
-
         for (int j = 0; j < i; ++j)
         {
-            // non-pointer type won't alias
-            if (!summary.inputs[j]->getType()->isPointerTy())
-            {
-                continue;
-            }
-
             // we want to convert alias constraint from callee's context into call sites'
             // i.e. term (xi, xj) -> c(i, j)
 
@@ -212,7 +200,7 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
     {
         for (auto& [loc_dst, constraint] : pt_map)
         {
-            constraint.body.substitute(zsrc, zdst);
+            constraint = constraint.body.substitute(zsrc, zdst);
         }
     }
 
@@ -382,6 +370,7 @@ void AbstractExecution::ReadStore(const llvm::Value* reg, const llvm::Value* reg
         {
             // TODO: filter unsatisfiable edges?
             AddPointToEdge(pt_map, val, ptr_constraint && val_constraint);
+            fmt::print("  add edge {} ? [ptr:{}; val: {}]\n", val, ptr_constraint, val_constraint);
         }
     }
 }

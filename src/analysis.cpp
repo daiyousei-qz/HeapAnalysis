@@ -56,6 +56,11 @@ AnalysisContext::AnalysisContext(const SummaryEnvironment* env, const Function* 
                 if (find(called_functions_.begin(), called_functions_.end(), callee) ==
                     called_functions_.end())
                 {
+                    // TODO: remove this nasty workaround
+                    if (IsMallocCall(call_inst))
+                    {
+                        break;
+                    }
                     called_functions_.push_back(callee);
                 }
             }
@@ -260,13 +265,12 @@ bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
 {
     auto exec = ctx.InitializeExecution(block);
 
-#ifdef HEAP_ANALYSIS_DEBUG_MODE
-    // llvm::outs() << "===========================================\n";
-    // llvm::outs() << ToString(*exec);
-#endif
-
     for (const Instruction& inst : *block)
     {
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+        fmt::print("interpreting {}...\n", reinterpret_cast<const Value&>(inst));
+#endif
+
         if (isa<AllocaInst>(inst))
         {
             exec->AssignRegister(&inst, LocationVar::FromStackAlloc(&inst));
@@ -354,7 +358,6 @@ AnalyzeFunction(const SummaryEnvironment& env,
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
     auto term_exec = ctx.RetrieveExecution(&func->back());
-    // llvm::outs() << ToString(*term_exec);
     DebugPrint(*term_exec, true);
 #endif
 

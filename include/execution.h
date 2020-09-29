@@ -33,7 +33,9 @@ public:
 
     const AnalysisContext& GetContext() const noexcept { return *ctx_; }
 
-    const AbstractStore& GetStore() const noexcept { return store_; }
+    const auto& GetAliasMap() const noexcept { return alias_map_; }
+
+    const auto& GetStore() const noexcept { return store_; }
 
     void MergeWith(const AbstractExecution& other)
     {
