@@ -3,6 +3,10 @@
 #include "fmt/format.h"
 #include <vector>
 
+struct Constraint;
+class SmtProvider;
+class ConstraintSolver;
+
 class SmtProvider
 {
 private:
@@ -19,10 +23,7 @@ private:
     }
 
 public:
-    z3::context& Context() noexcept
-    {
-        return ctx_;
-    }
+    z3::context& Context() noexcept { return ctx_; }
 
     const z3::expr& AliasLocation(int i)
     {
@@ -35,8 +36,11 @@ public:
     {
         ReserveAliasVariables(n_args);
 
-        return std::vector<z3::expr>{alias_locs_.begin(), alias_locs_.begin() + n_args};
+        return std::vector<z3::expr>{alias_locs_.begin(),
+                                     alias_locs_.begin() + n_args};
     }
+
+    ConstraintSolver CreateSolver();
 };
 
 struct Constraint
@@ -45,18 +49,14 @@ public:
     z3::expr body;
 
 public:
-    Constraint(z3::expr e)
-        : body(std::move(e)) {}
+    Constraint(z3::expr e) : body(std::move(e)) {}
 
     Constraint(const Constraint&) = default;
     Constraint(Constraint&&)      = default;
     Constraint& operator=(const Constraint&) = default;
     Constraint& operator=(Constraint&&) = default;
 
-    void Simplify()
-    {
-        body = body.simplify();
-    }
+    void Simplify() { body = body.simplify(); }
 };
 
 class ConstraintSolver
@@ -125,15 +125,9 @@ public:
         return Constraint{z3::mk_and(buf)};
     }
 
-    const auto& Provider()
-    {
-        return provider_;
-    }
+    const auto& Provider() { return provider_; }
 
-    auto& Context()
-    {
-        return provider_->Context();
-    }
+    auto& Context() { return provider_->Context(); }
 
 private:
     std::shared_ptr<SmtProvider> provider_;
@@ -150,7 +144,4 @@ inline Constraint operator||(const Constraint& lhs, const Constraint& rhs)
 {
     return Constraint{lhs.body || rhs.body};
 }
-inline Constraint operator!(const Constraint& c)
-{
-    return Constraint{!c.body};
-}
+inline Constraint operator!(const Constraint& c) { return Constraint{!c.body}; }

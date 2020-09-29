@@ -13,13 +13,15 @@ void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c);
 // compare
 // both stores are assumed to be normalized
 // i.e. every constrainted edge is satisfiable
-bool EqualAbstractStore(ConstraintSolver& smt_engine, const AbstractStore& s1, const AbstractStore& s2);
+bool EqualAbstractStore(ConstraintSolver& smt_engine, const AbstractStore& s1,
+                        const AbstractStore& s2);
 
 // merge point-to graphs into s1
 void MergeAbstractStore(AbstractStore& s1, const AbstractStore& s2);
 
 /**
- * An `AbstractExecution` is where analysis states are stored and static interpretations are performed
+ * An `AbstractExecution` is where analysis states are stored and static
+ * interpretations are performed
  */
 class AbstractExecution
 {
@@ -29,20 +31,15 @@ public:
     {
     }
 
-    const AnalysisContext& GetContext() const noexcept
-    {
-        return *ctx_;
-    }
+    const AnalysisContext& GetContext() const noexcept { return *ctx_; }
 
-    const AbstractStore& GetStore() const noexcept
-    {
-        return store_;
-    }
+    const AbstractStore& GetStore() const noexcept { return store_; }
 
     void MergeWith(const AbstractExecution& other)
     {
         // merge alias map
-        // TODO: this could be generated ahead of analysis to avoid redundent computation
+        // TODO: this could be generated ahead of analysis to avoid redundent
+        // computation
         for (const auto& [loc, canonical_loc] : other.alias_map_)
         {
             alias_map_.insert_or_assign(loc, canonical_loc);
@@ -65,7 +62,8 @@ public:
     void AssignRegister(const llvm::Value* reg, LocationVar val);
 
     // x = f(...)
-    void Invoke(const llvm::Value* reg_assign, const llvm::Value** reg_args, const FunctionSummary& summary);
+    void Invoke(const llvm::Value* reg_assign, const std::vector<const llvm::Value*>& reg_args,
+                const FunctionSummary& summary, int call_point);
 
     // x = *p
     void ReadStore(const llvm::Value* reg, const llvm::Value* reg_ptr);

@@ -21,7 +21,7 @@ mkdir ll
 for f in ./src/*.c
 do
     name=$(basename -s .c $f)
-    clang -S -emit-llvm $f -o ./ll/$name.ll
+    clang-9 -S -fno-discard-value-names -emit-llvm $f -o ./ll/$name.ll
 done
 
 for f in ./ll/*.ll

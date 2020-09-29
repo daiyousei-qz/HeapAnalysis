@@ -16,7 +16,7 @@ void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c)
     auto it = edges.find(loc);
     if (it == edges.end())
     {
-        edges.insert(make_pair(loc, move(c)));
+        edges.insert(pair{loc, move(c)});
     }
     else
     {
@@ -124,14 +124,12 @@ void AbstractExecution::NormalizeStore()
     }
 }
 
-void AbstractExecution::AliasRegister(const llvm::Value* reg,
-                                      const llvm::Value* alias_target)
+void AbstractExecution::AliasRegister(const llvm::Value* reg, const llvm::Value* alias_target)
 {
     alias_map_.insert_or_assign(reg, alias_target);
 }
 
-const llvm::Value*
-AbstractExecution::GetCanonicalRegister(const llvm::Value* reg)
+const llvm::Value* AbstractExecution::GetCanonicalRegister(const llvm::Value* reg)
 {
     if (auto it = alias_map_.find(reg); it != alias_map_.end())
     {
@@ -145,13 +143,13 @@ AbstractExecution::GetCanonicalRegister(const llvm::Value* reg)
 
 void AbstractExecution::AssignRegister(const llvm::Value* reg, LocationVar val)
 {
-    LocationVar loc_reg = LocationVar::FromProgramValue(reg);
+    LocationVar loc_reg = LocationVar::FromRegister(reg);
     store_[loc_reg]     = PointToMap{{val, ctx_->GetSmtSolver().MakeTop()}};
 }
 
 void AbstractExecution::Invoke(const llvm::Value* reg_assign,
-                               const llvm::Value** reg_args,
-                               const FunctionSummary& summary)
+                               const std::vector<const llvm::Value*>& reg_inputs,
+                               const FunctionSummary& summary, int call_point)
 {
     // step 1: rewrite constraint terms
     //
@@ -159,41 +157,54 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
     // TODO: filter out non-ptr argument to be consistant with analysis input
     // collection
     // TODO: move explicit z3 calls into constraint module?
-    int num_args = summary.function->arg_size();
+    assert(reg_inputs.size() == summary.inputs.size());
+
     z3::expr_vector zsrc{ctx_->GetSmtSolver().Context()};
     z3::expr_vector zdst{ctx_->GetSmtSolver().Context()};
-    for (int i = 1; i < num_args; ++i)
+    for (int i = 1; i < summary.inputs.size(); ++i)
     {
+        // non-pointer type won't alias
+        if (!summary.inputs[i]->getType()->isPointerTy())
+        {
+            continue;
+        }
+
         for (int j = 0; j < i; ++j)
         {
-            PointToMap& pt_map_i = LookupRegister(reg_args[i]);
-            PointToMap& pt_map_j = LookupRegister(reg_args[j]);
+            // non-pointer type won't alias
+            if (!summary.inputs[j]->getType()->isPointerTy())
+            {
+                continue;
+            }
+
+            // we want to convert alias constraint from callee's context into call sites'
+            // i.e. term (xi, xj) -> c(i, j)
+
+            // input point-to map in argument-space
+            PointToMap& input_pt_map_i = LookupRegister(reg_inputs[i]);
+            PointToMap& input_pt_map_j = LookupRegister(reg_inputs[j]);
 
             Constraint c = ctx_->GetSmtSolver().MakeBottom();
-            for (const auto& [loc_dst_i, c_i] : pt_map_i)
+            for (const auto& [loc_dst_i, c_i] : input_pt_map_i)
             {
-                if (auto iter = pt_map_j.find(loc_dst_i);
-                    iter != pt_map_j.end())
+                if (auto iter = input_pt_map_j.find(loc_dst_i); iter != input_pt_map_j.end())
                 {
                     const Constraint& c_j = iter->second;
 
+                    // under c_i, reg_inputs[i] points to loc_dst_i
+                    // under c_j, reg_inputs[j] points to loc_dst_i, too
+                    // so under c_i && c_j may reg_inputs[i] and reg_inputs[j] alias
                     c = c || (c_i && c_j);
                 }
             }
 
             c.Simplify();
-            zsrc.push_back(ctx_->GetSmtSolver().MakeAliasLocationExpr(i, j));
+
+            auto& smt_engine = *ctx_->Environment().SmtEngine();
+            zsrc.push_back(smt_engine.AliasLocation(i) == smt_engine.AliasLocation(j));
             zdst.push_back(c.body);
         }
     }
-
-#ifdef MODULE_DEBUG_MODE
-    fmt::print("[Constraint mapping]\n");
-    for (int i = 0; i < zsrc.size(); ++i)
-    {
-        fmt::print("{} <-> {}\n", zsrc[i].to_string(), zdst[i].to_string());
-    }
-#endif
 
     // TODO: deal with ast distinct?
     AbstractExecution exec_callee = *summary.result;
@@ -205,63 +216,84 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
         }
     }
 
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+    fmt::print("[Constraint mapping]\n");
+    for (int i = 0; i < zsrc.size(); ++i)
+    {
+        fmt::print("{} <-> {}\n", zsrc[i].to_string(), zdst[i].to_string());
+    }
+#endif
+
     // step 2: compute mappings of dynamic location variables
     //
+
+    // parameter-space -> argument-space
     std::unordered_map<LocationVar, PointToMap> loc_mappings_pa;
+    // argument-space -> parameter-space
     std::unordered_map<LocationVar, PointToMap> loc_mappings_ap;
-    std::deque<std::pair<LocationVar, Constraint>> loc_args;
-    std::deque<std::pair<LocationVar, Constraint>> loc_arg_pointees;
-    for (int i = 0; i < num_args; ++i)
+    // buffer of argument-space locations to be mapped
+    // constraint should be an accumulation of constraint in the path from reg to loc
+    std::deque<std::pair<LocationVar, Constraint>> loc_buffer_a;
+    // buffer of pointed locations of current location under analysis
+    // constraint should be an accumulation of constraint in the path from reg to loc
+    std::deque<std::pair<LocationVar, Constraint>> loc_pointed_buffer_a;
+    for (int i = 0; i < summary.inputs.size(); ++i)
     {
+        // build two-way mapping
+        // for each pi --> *pi --> ... --> **pi
+        //          |c      |c               |c
+        //          ai --> *ai --> ... --> **ai
         const llvm::Value* input_param = summary.inputs[i];
+        const llvm::Value* input_arg   = reg_inputs[i];
+
         int ptr_level = GetPointerNestLevel(input_param->getType());
 
-        // TODO: should we add register location variable mapping?
-        //       i.e. REG_P ->(T) REG_A
-        loc_args.clear();
-        loc_arg_pointees.clear();
-        for (const auto& [loc_a_pointee, loc_a_constraint] :
-             store_.at(LocationVar::FromProgramValue(reg_args[i])))
+        // initialize buffer
+
+        loc_buffer_a.clear();
+        loc_pointed_buffer_a.clear();
+        for (const auto& [loc_pointed_a, constraint] : LookupRegister(input_arg))
         {
-            loc_args.emplace_back(loc_a_pointee, loc_a_constraint);
+            loc_buffer_a.push_back(pair{loc_pointed_a, constraint});
         }
 
+        // breadth first traversal to construct mappings
         for (int deref_level = 0; deref_level <= ptr_level; ++deref_level)
         {
-            LocationVar loc_p =
-                LocationVar{LocationTag::Dynamic, input_param, deref_level};
-            PointToMap& pt_map = loc_mappings_pa[loc_p];
+            LocationVar loc_p = LocationVar::FromRuntimeMemory(input_param, deref_level);
 
-            assert(loc_arg_pointees.empty());
-            while (!loc_args.empty())
+            assert(loc_pointed_buffer_a.empty());
+            while (!loc_buffer_a.empty())
             {
-                auto [loc_a, constraint] = std::move(loc_args.front());
-                loc_args.pop_front();
+                auto [loc_a, constraint] = std::move(loc_buffer_a.front());
+                loc_buffer_a.pop_front();
 
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
                 constraint.Simplify();
 #endif
 
+                // collect pointed locations of loc_a
                 auto iter_pt_map_a = store_.find(loc_a);
                 if (iter_pt_map_a != store_.end())
                 {
-                    for (const auto& [loc_a_pointee, loc_a_constraint] :
-                         iter_pt_map_a->second)
+                    for (const auto& [loc_pointed_a, pointed_constraint] : iter_pt_map_a->second)
                     {
-                        loc_arg_pointees.emplace_back(
-                            loc_a_pointee, constraint && loc_a_constraint);
+                        loc_pointed_buffer_a.push_back(
+                            pair{loc_pointed_a, constraint && pointed_constraint});
                     }
                 }
 
-                pt_map.insert_or_assign(loc_a, constraint);
-                loc_mappings_ap[loc_a].insert_or_assign(loc_p, constraint);
+                // save mappings
+                loc_mappings_pa[loc_p].insert(pair{loc_a, constraint});
+                loc_mappings_ap[loc_a].insert(pair{loc_p, constraint});
             }
 
-            std::swap(loc_args, loc_arg_pointees);
+            // reuse buffer
+            std::swap(loc_buffer_a, loc_pointed_buffer_a);
         }
     }
 
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
     fmt::print("[Location mapping]\n");
     for (const auto& [loc_p, eq_map] : loc_mappings_pa)
     {
@@ -272,57 +304,57 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
     }
 #endif
 
-    // step 3: merge callee's heap into this execution
+    // step 3: merge callee's heap into current execution
     //
     for (const auto& [loc_a, eq_map] : loc_mappings_ap)
     {
         Constraint pass_in_constraint = ctx_->GetSmtSolver().MakeBottom();
         PointToMap new_pt_map;
 
+        // case 1: location is passed into callee
         for (const auto& [loc_p, eq_constraint] : eq_map)
         {
             pass_in_constraint = pass_in_constraint || eq_constraint;
 
-            for (const auto& [val_p, val_p_constraint] :
-                 exec_callee.store_[loc_p])
+            for (const auto& [loc_pointed_p, pt_constraint] : exec_callee.store_[loc_p])
             {
-                if (val_p.GetTag() == LocationTag::Dynamic)
+                assert(loc_pointed_p.Tag() != LocationTag::Register);
+
+                // under eq_constraint, loc_a <=> loc_p
+                // under pt_constraint, loc_p -> loc_pointed_p
+                if (loc_pointed_p.Tag() == LocationTag::Dynamic)
                 {
-                    auto iter_pa_mapping = loc_mappings_pa.find(val_p);
+                    // having tag Dynamic
+                    // actual location defined in caller's context
+                    auto iter_pa_mapping = loc_mappings_pa.find(loc_pointed_p);
                     if (iter_pa_mapping != loc_mappings_pa.end())
                     {
-                        for (const auto& [val_a, mapping_constraint] :
+                        for (const auto& [loc_pointed_a, mapping_constraint] :
                              iter_pa_mapping->second)
                         {
-                            // fmt::print("+++{} <-> {}\n", loc_a, loc_p);
-                            // fmt::print("  => {} <-> {}\n", val_a, val_p);
-                            // fmt::print("eq {}\n", eq_constraint);
-                            // fmt::print("p {}\n", val_p_constraint);
-                            // fmt::print("a {}\n", mapping_constraint);
-                            // fmt::print("---\n", loc_a);
-
-                            AddPointToEdge(new_pt_map, val_a,
-                                           eq_constraint && val_p_constraint &&
-                                               mapping_constraint);
+                            // under mapping_constraint, loc_pointed_p <=> loc_pointed_a
+                            AddPointToEdge(new_pt_map, loc_pointed_a,
+                                           eq_constraint && pt_constraint && mapping_constraint);
                         }
                     }
                 }
                 else
                 {
-                    // TODO: add a tag to differentiate
-                    AddPointToEdge(new_pt_map, val_p,
-                                   eq_constraint && val_p_constraint);
+                    // having tag Value/StackAlloc/HeapAlloc
+                    // actual location defined in callee's context
+                    AddPointToEdge(new_pt_map, loc_pointed_p.Rebrand(call_point),
+                                   eq_constraint && pt_constraint);
                 }
             }
         }
 
-        for (const auto& [val_a, val_a_constraint] : store_[loc_a])
+        // case2: location isn't passed into callee
+        for (const auto& [loc_pointed_a, constraint] : store_[loc_a])
         {
-            AddPointToEdge(new_pt_map, val_a,
-                           !pass_in_constraint && val_a_constraint);
+            AddPointToEdge(new_pt_map, loc_pointed_a, !pass_in_constraint && constraint);
         }
 
-#ifdef MODULE_DEBUG_MODE
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
         fmt::print("rewriting ptmap of {}\n", loc_a);
         for (auto& [loc_target, constraint] : new_pt_map)
         {
@@ -334,14 +366,13 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
     }
 }
 
-void AbstractExecution::ReadStore(const llvm::Value* reg,
-                                  const llvm::Value* reg_ptr)
+void AbstractExecution::ReadStore(const llvm::Value* reg, const llvm::Value* reg_ptr)
 {
     // unroll alias
     reg_ptr = GetCanonicalRegister(reg_ptr);
 
     // update point-to map
-    PointToMap& pt_map = store_[LocationVar::FromProgramValue(reg)];
+    PointToMap& pt_map = store_[LocationVar::FromRegister(reg)];
     pt_map.clear();
 
     PointToMap& ptr_loc_pt_map = LookupRegister(reg_ptr);
@@ -382,7 +413,7 @@ void AbstractExecution::WriteStore(const Value* reg_val, const Value* reg_ptr)
 PointToMap& AbstractExecution::LookupRegister(const llvm::Value* reg)
 {
     assert(reg != nullptr);
-    LocationVar loc = LocationVar::FromProgramValue(reg);
+    LocationVar loc = LocationVar::FromRegister(reg);
 
     auto iter = store_.find(loc);
     if (iter != store_.end())
@@ -393,14 +424,7 @@ PointToMap& AbstractExecution::LookupRegister(const llvm::Value* reg)
     PointToMap& pt_map = store_[loc];
     if (isa<Constant>(reg))
     {
-        pt_map.insert_or_assign(LocationVar{LocationTag::Value, reg},
-                                ctx_->GetSmtSolver().MakeTop());
-    }
-    else if (const Argument* arg_reg = dyn_cast<const Argument>(reg); arg_reg)
-    {
-        assert(!arg_reg->getType()->isPointerTy());
-        pt_map.insert_or_assign(LocationVar{LocationTag::Dynamic, reg},
-                                ctx_->GetSmtSolver().MakeTop());
+        pt_map.insert(pair{LocationVar::FromProgramValue(reg), ctx_->GetSmtSolver().MakeTop()});
     }
     else
     {

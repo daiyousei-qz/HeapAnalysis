@@ -4,10 +4,9 @@
 #include "llvm/Pass.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Analysis/CallGraph.h"
-#include <llvm/ADT/DepthFirstIterator.h>
 #include <string>
 #include <stack>
+#include <unordered_set>
 
 using namespace std;
 using namespace llvm;
@@ -27,7 +26,7 @@ namespace
         ScopeExit& operator=(const ScopeExit&) = delete;
     };
 
-    template <typename EF> ScopeExit(EF)->ScopeExit<EF>;
+    template <typename EF> ScopeExit(EF) -> ScopeExit<EF>;
 
     class HeapAnalysis : public ModulePass
     {
@@ -35,23 +34,17 @@ namespace
         static char ID;
         HeapAnalysis() : ModulePass(ID) {}
 
-        void getAnalysisUsage(AnalysisUsage& AU) const override
-        {
-            AU.setPreservesAll();
-        }
+        void getAnalysisUsage(AnalysisUsage& AU) const override { AU.setPreservesAll(); }
 
         bool doInitialization(Module& M) override { return false; }
 
         bool runOnModule(Module& M) override
         {
             SummaryEnvironment env;
-            std::stack<const Function*> call_chain;
+            std::unordered_set<const Function*> call_history;
             for (const Function& func : M)
             {
-                if (!func.empty())
-                {
-                    ProcessFunctionAnalysis(env, call_chain, &func);
-                }
+                ProcessFunctionAnalysis(env, call_history, &func);
             }
 
             return false;
@@ -60,33 +53,31 @@ namespace
     private:
         // TODO: support recursive function
         void ProcessFunctionAnalysis(SummaryEnvironment& env,
-                                     std::stack<const Function*>& call_chain,
+                                     std::unordered_set<const llvm::Function*>& call_history,
                                      const Function* func)
         {
-            if (env.IsAnalyzed(func))
+            if (func->empty() || env.IsAnalyzed(func))
             {
                 return;
             }
 
-            call_chain.push(func);
-            ScopeExit pop_func_([&] { call_chain.pop(); });
+            call_history.insert(func);
+            ScopeExit pop_func_([&] { call_history.erase(func); });
 
-            std::vector<const Function*> called_funcs;
-            CollectCalledFunction(func, called_funcs);
+            std::vector<const Function*> called_funcs = CollectCalledFunction(func);
 
             for (const Function* callee : called_funcs)
             {
-                if (!env.IsAnalyzed(func))
+                if (!env.IsAnalyzed(callee))
                 {
-                    ProcessFunctionAnalysis(env, call_chain, callee);
+                    ProcessFunctionAnalysis(env, call_history, callee);
                 }
             }
 
-            env.RegisterSummary(func, AnalyzeFunction(env, call_chain, func));
+            env.RegisterSummary(func, AnalyzeFunction(env, call_history, func));
         }
     };
 } // namespace
 
 char HeapAnalysis::ID = 0;
-static RegisterPass<HeapAnalysis> X("heap-analysis", "point-to analysis", false,
-                                    true);
+static RegisterPass<HeapAnalysis> X("heap-analysis", "point-to analysis", false, true);
