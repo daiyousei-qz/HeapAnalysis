@@ -58,7 +58,7 @@ public:
     void AliasRegister(const llvm::Value* reg, const llvm::Value* alias_target);
 
     // unroll alias
-    const llvm::Value* GetCanonicalRegister(const llvm::Value* reg);
+    const llvm::Value* GetCanonicalRegister(const llvm::Value* reg) const;
 
     // x = alloc(?)
     void AssignRegister(const llvm::Value* reg, LocationVar val);
@@ -72,6 +72,8 @@ public:
 
     // *p = x
     void WriteStore(const llvm::Value* reg_val, const llvm::Value* reg_ptr);
+
+    bool TestMayAlias(const llvm::Value* store_ptr_reg, const llvm::Value* load_ptr_reg);
 
 private:
     PointToMap& LookupRegister(const llvm::Value* reg);

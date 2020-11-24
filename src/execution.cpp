@@ -129,7 +129,7 @@ void AbstractExecution::AliasRegister(const llvm::Value* reg, const llvm::Value*
     alias_map_.insert_or_assign(reg, alias_target);
 }
 
-const llvm::Value* AbstractExecution::GetCanonicalRegister(const llvm::Value* reg)
+const llvm::Value* AbstractExecution::GetCanonicalRegister(const llvm::Value* reg) const
 {
     if (auto it = alias_map_.find(reg); it != alias_map_.end())
     {
@@ -147,6 +147,7 @@ void AbstractExecution::AssignRegister(const llvm::Value* reg, LocationVar val)
     store_[loc_reg]     = PointToMap{{val, ctx_->GetSmtSolver().MakeTop()}};
 }
 
+// f g(x, y)
 void AbstractExecution::Invoke(const llvm::Value* reg_assign,
                                const std::vector<const llvm::Value*>& reg_inputs,
                                const FunctionSummary& summary, int call_point)
@@ -212,7 +213,7 @@ void AbstractExecution::Invoke(const llvm::Value* reg_assign,
     }
 #endif
 
-    // step 2: compute mappings of dynamic location variables
+    // step 2: compute mappings of location variables
     //
 
     // parameter-space -> argument-space
@@ -417,8 +418,33 @@ PointToMap& AbstractExecution::LookupRegister(const llvm::Value* reg)
     }
     else
     {
+        llvm::outs() << *reg << "\n";
         throw "invalid register";
     }
 
     return pt_map;
+}
+
+bool AbstractExecution::TestMayAlias(const llvm::Value* store_ptr_reg,
+                                     const llvm::Value* load_ptr_reg)
+{
+    store_ptr_reg = GetCanonicalRegister(store_ptr_reg);
+    load_ptr_reg  = GetCanonicalRegister(load_ptr_reg);
+
+    const PointToMap& store_pt_map = LookupRegister(store_ptr_reg);
+    const PointToMap& load_pt_map  = LookupRegister(load_ptr_reg);
+    for (const auto& [loc, c_store_ptr] : store_pt_map)
+    {
+        auto iter = load_pt_map.find(loc);
+        if (iter != load_pt_map.end())
+        {
+            const auto& c_load_ptr = iter->second;
+            if (ctx_->GetSmtSolver().TestSatisfiability(c_store_ptr && c_load_ptr))
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }

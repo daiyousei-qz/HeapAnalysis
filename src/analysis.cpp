@@ -15,6 +15,85 @@
 using namespace std;
 using namespace llvm;
 
+// {dst -> {src}}
+std::unordered_map<const BasicBlock*, std::unordered_set<const BasicBlock*>>
+ComputeBlockSourceMap(const Function& F)
+{
+    unordered_map<const BasicBlock*, unordered_set<const BasicBlock*>> reach_map;
+    for (const BasicBlock& bb : F)
+    {
+        reach_map[&bb] = unordered_set<const BasicBlock*>(succ_begin(&bb), succ_end(&bb));
+    }
+
+    for (const BasicBlock& bb_src : F)
+    {
+        auto& src_reaches = reach_map[&bb_src];
+        for (const BasicBlock* bb_dst : successors(&bb_src))
+        {
+            const auto& dst_reaches = reach_map[bb_dst];
+            for (const BasicBlock* bb_reach : dst_reaches)
+            {
+                src_reaches.insert(bb_reach);
+            }
+        }
+    }
+
+    unordered_map<const BasicBlock*, unordered_set<const BasicBlock*>> src_map;
+    for (const BasicBlock& bb_src : F)
+    {
+        const auto& src_reaches = reach_map[&bb_src];
+        for (const BasicBlock* bb_reach : src_reaches)
+        {
+            src_map[bb_reach].insert(&bb_src);
+        }
+    }
+
+    return src_map;
+}
+
+std::unordered_map<const BasicBlock*, std::vector<const StoreInst*>>
+CollectStoreInst(const Function& F)
+{
+    unordered_map<const BasicBlock*, vector<const StoreInst*>> result;
+    for (const BasicBlock& bb : F)
+    {
+        auto& bucket = result[&bb];
+        for (const Instruction& inst : bb)
+        {
+            if (auto store_inst = dyn_cast<StoreInst>(&inst))
+            {
+                bucket.push_back(store_inst);
+            }
+        }
+    }
+
+    return result;
+}
+
+void CollectStoreLoadPairs(
+    const Function& F,
+    const std::unordered_map<const BasicBlock*, std::unordered_set<const BasicBlock*>>& src_map)
+{
+    unordered_map<const LoadInst*, vector<const StoreInst*>> ls_pair_lookup;
+    vector<const StoreInst*> store_so_far;
+
+    for (const BasicBlock& bb : F)
+    {
+        store_so_far.clear();
+
+        for (const Instruction& inst : bb)
+        {
+            if (const StoreInst* store_inst = dyn_cast<StoreInst>(&inst))
+            {
+                store_so_far.push_back(store_inst);
+            }
+            else if (const LoadInst* load_inst = dyn_cast<LoadInst>(&inst))
+            {
+            }
+        }
+    }
+}
+
 const Value* CollectReturnValue(const Function& F)
 {
     // TODO: is return
@@ -107,6 +186,9 @@ AnalysisContext::AnalysisContext(const SummaryEnvironment* env, const Function* 
     }
 
     smt_solver_.Initialize(inputs_.size());
+
+    block_src_map_     = ComputeBlockSourceMap(*func);
+    block_store_cache_ = CollectStoreInst(*func);
 }
 
 // TODO: may use index of the instruction
@@ -260,15 +342,58 @@ AbstractStore AnalysisContext::CreateBootstrapStore()
 // Analysis
 //
 
+map<pair<const StoreInst*, const LoadInst*>, bool> pdg_edges;
+
+void InitializePdgAnalysis() { pdg_edges.clear(); }
+
+void TryAddPdgEdge(AbstractExecution& exec, const StoreInst* store, const LoadInst* load)
+{
+    pdg_edges[pair{store, load}] = false;
+
+    const Value* store_ptr = store->getPointerOperand();
+    const Value* load_ptr  = load->getPointerOperand();
+    if (store_ptr == load_ptr || exec.TestMayAlias(store_ptr, load_ptr))
+    // if (store_ptr == load_ptr)
+    {
+        pdg_edges[pair{store, load}] = true;
+    }
+
+    // TODO: add analysis
+}
+
+void PrintPdgEdge()
+{
+    map<const StoreInst*, vector<const LoadInst*>> edges;
+    for (auto [pair, exist] : pdg_edges)
+    {
+        if (exist)
+        {
+            edges[pair.first].push_back(pair.second);
+        }
+    }
+
+    fmt::print("digraph PDG {{\n");
+    for (const auto& [store, load_vec] : edges)
+    {
+        for (const auto& load : load_vec)
+        {
+            fmt::print("  \"{}\" -> \"{}\"\n", *static_cast<const Value*>(store),
+                       *static_cast<const Value*>(load));
+        }
+    }
+    fmt::print("}}\n");
+}
+
 // returns true if consequnt program state is updated
 bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
 {
     auto exec = ctx.InitializeExecution(block);
+    vector<const StoreInst*> stores_so_far;
 
     for (const Instruction& inst : *block)
     {
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        fmt::print("interpreting {}...\n", reinterpret_cast<const Value&>(inst));
+        fmt::print("interpreting {}...\n", static_cast<const Value&>(inst));
 #endif
 
         if (isa<AllocaInst>(inst))
@@ -292,10 +417,25 @@ bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
         else if (auto store_inst = dyn_cast<StoreInst>(&inst))
         {
             exec->WriteStore(store_inst->getOperand(0), store_inst->getOperand(1));
+
+            stores_so_far.push_back(store_inst);
         }
         else if (auto load_inst = dyn_cast<LoadInst>(&inst))
         {
             exec->ReadStore(&inst, load_inst->getOperand(0));
+
+            // TODO: move PDG out of alias analysis
+            for (auto store : stores_so_far)
+            {
+                TryAddPdgEdge(*exec, store, load_inst);
+            }
+            for (const auto& src_bb : ctx.block_src_map_[block])
+            {
+                for (auto store : ctx.block_store_cache_[src_bb])
+                {
+                    TryAddPdgEdge(*exec, store, load_inst);
+                }
+            }
         }
         else if (auto call_inst = dyn_cast<CallInst>(&inst))
         {
@@ -335,6 +475,8 @@ AnalyzeFunction(const SummaryEnvironment& env,
     llvm::outs() << *func << "\n";
 #endif
 
+    InitializePdgAnalysis();
+
     // TODO: should be retrieved from env?
     AnalysisContext ctx{&env, func};
 
@@ -359,6 +501,7 @@ AnalyzeFunction(const SummaryEnvironment& env,
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
     auto term_exec = ctx.RetrieveExecution(&func->back());
     DebugPrint(*term_exec, true);
+    PrintPdgEdge();
 #endif
 
     return ctx.YieldSummary();
