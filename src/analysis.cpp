@@ -416,13 +416,13 @@ bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* block)
         }
         else if (auto store_inst = dyn_cast<StoreInst>(&inst))
         {
-            exec->WriteStore(store_inst->getOperand(0), store_inst->getOperand(1));
+            exec->WriteStore(store_inst->getValueOperand(), store_inst->getPointerOperand());
 
             stores_so_far.push_back(store_inst);
         }
         else if (auto load_inst = dyn_cast<LoadInst>(&inst))
         {
-            exec->ReadStore(&inst, load_inst->getOperand(0));
+            exec->ReadStore(&inst, load_inst->getPointerOperand());
 
             // TODO: move PDG out of alias analysis
             for (auto store : stores_so_far)

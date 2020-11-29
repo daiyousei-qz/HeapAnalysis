@@ -42,10 +42,10 @@ private:
         // valid when tag is Dynamic
         int deref_level_;
 
-        // valid when tag in {Value, StackAlloc, HeapAlloc}
+        // valid when tag is any of {Value, StackAlloc, HeapAlloc}
         int call_point_;
 
-        // virtual slot for intialization
+        // dummy slot for intialization
         int placeholder_id_;
     };
 
