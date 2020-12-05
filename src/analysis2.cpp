@@ -16,16 +16,16 @@ namespace mh
 
         // collect backward control flow edges
         {
-            SmallVector<std::pair<const BasicBlock*, const BasicBlock*>, 8> buffer;
+            SmallVector<pair<const BasicBlock*, const BasicBlock*>, 8> buffer;
             FindFunctionBackedges(*summary->func, buffer);
 
-            this->backedges_ = std::set<ControlFlowEdge>(buffer.begin(), buffer.end());
+            this->backedges_ = set<ControlFlowEdge>(buffer.begin(), buffer.end());
         }
 
         // add alias rejection
-        const auto& inputs = summary->inputs;
+        const vector<const Value*>& inputs = summary->inputs;
         vector<int> ptr_nest_levels;
-        for (const auto& arg : inputs)
+        for (const Value* arg : inputs)
         {
             ptr_nest_levels.push_back(GetPointerNestLevel(arg->getType()));
         }
@@ -42,6 +42,10 @@ namespace mh
                 if (!type_i->isPointerTy() || !type_j->isPointerTy())
                 {
                     smt_solver_.RejectAlias(i, j);
+
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+                    fmt::print("[analysis] rejecting alias({}, {}), reason: non-ptr type\n", i, j);
+#endif
                 }
 
                 if (ptr_nest_levels[i] != ptr_nest_levels[j])
@@ -50,27 +54,32 @@ namespace mh
                     // TODO: add toggles for relaxed aliasing rules
                     // TODO: reject non-interfering alias, e.g. two pointers that are not written
                     smt_solver_.RejectAlias(i, j);
+
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+                    fmt::print("[analysis] rejecting alias({}, {}), reason: different ptr level\n",
+                               i, j);
+#endif
                 }
             }
         }
 
-        // initialize store for analysis
+        // initialize entry store for analysis
         for (int i = 0; i < inputs.size(); ++i)
         {
             const llvm::Value* arg_i = inputs[i];
+            int ptr_level_i          = ptr_nest_levels[i];
             const LocationVar loc_i  = LocationVar::FromRegister(arg_i);
 
             // add edges when there's strictly no aliasing, i.e. vi -> *vi -> **vi
             LocationVar loc         = loc_i;
             LocationVar loc_pointed = LocationVar::FromRuntimeMemory(arg_i, 0);
-            init_store_[loc]        = {{loc_pointed, smt_solver_.MakeAliasConstraint(i, i)}};
+            entry_store_[loc]       = {{loc_pointed, smt_solver_.MakeAliasConstraint(i, i)}};
 
-            int ptr_level = GetPointerNestLevel(arg_i->getType());
-            for (int k = 0; k < ptr_level; ++k)
+            for (int k = 0; k < ptr_level_i; ++k)
             {
-                loc              = loc_pointed;
-                loc_pointed      = LocationVar::FromRuntimeMemory(arg_i, k + 1);
-                init_store_[loc] = {{loc_pointed, Constraint{true}}};
+                loc               = loc_pointed;
+                loc_pointed       = LocationVar::FromRuntimeMemory(arg_i, k + 1);
+                entry_store_[loc] = {{loc_pointed, Constraint{true}}};
             }
 
             // add edges under aliased conditions
@@ -79,19 +88,20 @@ namespace mh
                 if (smt_solver_.TestAlias(i, j))
                 {
                     LocationVar loc_alias = LocationVar::FromRuntimeMemory(inputs[j], 0);
-                    init_store_[loc].insert(pair{loc_alias, smt_solver_.MakeAliasConstraint(i, j)});
+                    entry_store_[loc_i].insert(
+                        pair{loc_alias, smt_solver_.MakeAliasConstraint(i, j)});
                 }
             }
         }
 
-        // move reg edges to regfile
-        for (auto it = init_store_.begin(); it != init_store_.end();)
+        // move edges from register location to regfile from entry store
+        for (auto it = entry_store_.begin(); it != entry_store_.end();)
         {
             if (it->first.Tag() == LocationTag::Register)
             {
                 regfile_[it->first.Definition()] = move(it->second);
 
-                it = init_store_.erase(it);
+                it = entry_store_.erase(it);
             }
             else
             {
@@ -133,7 +143,7 @@ namespace mh
         if (bb_init_store.empty())
         {
             // then this is the first basic block of the function
-            bb_init_store = this->init_store_;
+            bb_init_store = this->entry_store_;
         }
 
         NormalizeStore(smt_solver_, bb_init_store);
@@ -168,34 +178,200 @@ namespace mh
         return false;
     }
 
-    // returns true if consequnt program state is updated
-    bool AnalyzeBlock(AnalysisContext& ctx, const llvm::BasicBlock* bb)
+    AbstractStore AnalysisContext::ExportStore()
     {
-        auto exec = ctx.InitializeExecution(bb);
+        AbstractStore result = std::move(exec_store_cache_.at(&summary_entry_->func->back()));
+        for (auto& [reg, pt_map] : regfile_)
+        {
+            result[LocationVar::FromRegister(reg)] = std::move(pt_map);
+        }
+
+        return result;
+    }
+
+    void AnalysisContext::DebugPrint(const BasicBlock* bb)
+    {
+        unordered_set<LocationVar> known_locs;
+        deque<LocationVar> important_locs;
+
+        // to print input pointers
+        for (const Value* input_reg : summary_entry_->inputs)
+        {
+            LocationVar loc = LocationVar::FromRegister(input_reg);
+            known_locs.insert(loc);
+            important_locs.push_back(loc);
+        }
+
+        // to print return value
+        if (const Value* ret_val = summary_entry_->return_inst->getReturnValue();
+            ret_val != nullptr)
+        {
+            LocationVar loc = LocationVar::FromRegister(ret_val);
+            known_locs.insert(loc);
+            important_locs.push_back(loc);
+        }
+
+        fmt::print("Abstract Store:\n");
+
+        PointToMap empty_ptmap;
+        const AbstractStore& store = bb != nullptr ? exec_store_cache_.at(bb) : entry_store_;
+
+        auto lookup_store = [&](LocationVar loc) -> const PointToMap& {
+            if (loc.Tag() == LocationTag::Register)
+            {
+                return LookupRegFile(loc.Definition());
+            }
+            else if (auto it = store.find(loc); it != store.end())
+            {
+                return it->second;
+            }
+            else
+            {
+                return empty_ptmap;
+            }
+        };
+
+        // point-to graph
+        while (!important_locs.empty())
+        {
+            auto loc = important_locs.front();
+            important_locs.pop_front();
+
+            const auto& pt_map = lookup_store(loc);
+
+            fmt::print("| {}\n", loc);
+            for (const auto& [target_loc, constraint] : pt_map)
+            {
+                fmt::print("  -> {} ? {}\n", target_loc, constraint);
+
+                if (known_locs.find(target_loc) == known_locs.end())
+                {
+                    known_locs.insert(target_loc);
+                    important_locs.push_back(target_loc);
+                }
+            }
+        }
+    }
+
+    void DebugPrint(const AbstractStore& store)
+    {
+        unordered_set<LocationVar> known_locs;
+        deque<LocationVar> important_locs;
+
+        for (const auto& [loc, pt_map] : store)
+        {
+            known_locs.insert(loc);
+            important_locs.push_back(loc);
+        }
+
+        fmt::print("Abstract Store:\n");
+
+        // point-to graph
+        while (!important_locs.empty())
+        {
+            auto loc = important_locs.front();
+            important_locs.pop_front();
+
+            auto it = store.find(loc);
+            if (it == store.end())
+            {
+                continue;
+            }
+
+            fmt::print("| {}\n", loc);
+            for (const auto& [target_loc, constraint] : it->second)
+            {
+                fmt::print("  -> {} ? {}\n", target_loc, constraint);
+
+                if (known_locs.find(target_loc) == known_locs.end())
+                {
+                    known_locs.insert(target_loc);
+                    important_locs.push_back(target_loc);
+                }
+            }
+        }
+    }
+
+    void DebugPrint(const FunctionSummary& summary)
+    {
+        unordered_set<LocationVar> known_locs;
+        deque<LocationVar> important_locs;
+
+        // to print input pointers
+        for (const Value* input_reg : summary.inputs)
+        {
+            LocationVar loc = LocationVar::FromRegister(input_reg);
+            known_locs.insert(loc);
+            important_locs.push_back(loc);
+        }
+
+        // to print return value
+        if (const Value* ret_val = summary.return_inst->getReturnValue(); ret_val != nullptr)
+        {
+            LocationVar loc = LocationVar::FromRegister(ret_val);
+            known_locs.insert(loc);
+            important_locs.push_back(loc);
+        }
+
+        fmt::print("Abstract Store:\n");
+
+        // point-to graph
+        while (!important_locs.empty())
+        {
+            auto loc = important_locs.front();
+            important_locs.pop_front();
+
+            auto it = summary.store.find(loc);
+            if (it == summary.store.end())
+            {
+                continue;
+            }
+
+            fmt::print("| {}\n", loc);
+            for (const auto& [target_loc, constraint] : it->second)
+            {
+                fmt::print("  -> {} ? {}\n", target_loc, constraint);
+
+                if (known_locs.find(target_loc) == known_locs.end())
+                {
+                    known_locs.insert(target_loc);
+                    important_locs.push_back(target_loc);
+                }
+            }
+        }
+    }
+
+    bool AnalysisContext::AnalyzeBlock(const llvm::BasicBlock* bb)
+    {
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+        fmt::print("analyzing block {}...\n", bb->getName());
+#endif
+
+        auto exec = InitializeExecution(bb);
         // vector<const StoreInst*> stores_so_far;
 
         for (const Instruction& inst : *bb)
         {
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-            // fmt::print("interpreting {}...\n", static_cast<const Value&>(inst));
+            fmt::print("interpreting {}...\n", static_cast<const Value&>(inst));
 #endif
             if (isa<AllocaInst>(inst))
             {
-                exec->DoAssign(&inst, LocationVar::FromStackAlloc(&inst));
+                exec->DoAlloc(&inst, false);
             }
             else if (IsMallocCall(&inst))
             {
-                exec->DoAssign(&inst, LocationVar::FromHeapAlloc(&inst));
+                exec->DoAlloc(&inst, true);
             }
             else if (isa<BitCastInst>(&inst))
             {
                 // TODO:
-                ctx.AssignAliasReg(&inst, inst.getOperand(0));
+                AssignAliasReg(&inst, inst.getOperand(0));
             }
             else if (isa<GetElementPtrInst>(&inst))
             {
                 // TODO: mark summary location
-                ctx.AssignAliasReg(&inst, inst.getOperand(0));
+                AssignAliasReg(&inst, inst.getOperand(0));
             }
             else if (auto store_inst = dyn_cast<StoreInst>(&inst))
             {
@@ -223,7 +399,7 @@ namespace mh
             else if (auto call_inst = dyn_cast<CallInst>(&inst))
             {
                 const Function* callee                = call_inst->getCalledFunction();
-                const FunctionSummary& callee_summary = ctx.Environment()->LookupSummary(callee);
+                const FunctionSummary& callee_summary = Environment()->LookupSummary(callee);
 
                 std::vector<const llvm::Value*> reg_inputs;
                 reg_inputs.reserve(callee_summary.inputs.size());
@@ -231,7 +407,9 @@ namespace mh
                 copy(callee_summary.globals.begin(), callee_summary.globals.end(),
                      back_inserter(reg_inputs));
 
-                exec->DoInvoke(call_inst, reg_inputs, callee_summary, ctx.GetCallPoint(call_inst));
+                exec->DoInvoke(call_inst, reg_inputs, callee_summary, GetCallPoint(call_inst));
+                mh::NormalizeStore(smt_solver_, exec->store_);
+                mh::DebugPrint(exec->store_);
             }
             else
             {
@@ -239,11 +417,27 @@ namespace mh
             }
         }
 
-        return ctx.CommitExecution(bb, move(exec));
+        return CommitExecution(bb, move(exec));
     }
 
-    void AnalyzeFunction(SummaryEnvironment& env, const llvm::Function* func)
+    void AnalyzeFunctionAux(SummaryEnvironment& env, FunctionSummary& summary)
     {
+        if (summary.converged)
+        {
+            return;
+        }
+
+        for (const Function* called_func : summary.called_functions)
+        {
+            FunctionSummary& called_func_summary = env.LookupSummary(called_func);
+            if (!called_func_summary.converged && called_func_summary.func->doesNotRecurse())
+            {
+                AnalyzeFunctionAux(env, called_func_summary);
+            }
+        }
+
+        const Function* func = summary.func;
+
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         llvm::outs() << "---------\n";
         llvm::outs() << *func << "\n";
@@ -251,7 +445,6 @@ namespace mh
 
         // InitializePdgAnalysis();
 
-        FunctionSummary& summary = env.LookupSummary(func);
         AnalysisContext ctx{&env, &summary};
 
         unordered_set<const BasicBlock*> workset{&func->front()};
@@ -263,7 +456,7 @@ namespace mh
             worklist.pop_front();
             workset.erase(bb);
 
-            if (AnalyzeBlock(ctx, bb))
+            if (ctx.AnalyzeBlock(bb))
             {
                 for (const BasicBlock* succ_bb : successors(bb))
                 {
@@ -277,8 +470,7 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        // auto term_exec = ctx.RetrieveExecution(&func->back());
-        // DebugPrint(*term_exec, true);
+        ctx.DebugPrint(&func->back());
         // PrintPdgEdge();
 #endif
 
@@ -288,7 +480,21 @@ namespace mh
         if (summary.store.empty() || !EqualAbstractStore(ctx.Solver(), summary.store, result_store))
         {
             summary.store = move(result_store);
+            // TODO: support recursive functions
+            if (func->doesNotRecurse())
+            {
+                summary.converged = true;
+            }
         }
+        else
+        {
+            summary.converged = true;
+        }
+    }
+
+    void AnalyzeFunction(SummaryEnvironment& env, const Function* func)
+    {
+        AnalyzeFunctionAux(env, env.LookupSummary(func));
     }
 
 } // namespace mh

@@ -26,14 +26,16 @@ namespace mh
         using ControlFlowEdge = std::pair<const llvm::BasicBlock*, const llvm::BasicBlock*>;
         std::set<ControlFlowEdge> backedges_;
 
-        //
+        // a cache of indices to identify different program point
         std::unordered_map<const llvm::Instruction*, int> call_point_cache_;
 
         // abstract store at the entry point of the function
-        AbstractStore init_store_;
+        AbstractStore entry_store_;
 
         // consequent register file up to the point of the analysis
-        AbstractRegisterFile regfile_;
+        // because of SSA form, specialize this from AbstractStore to reduce memory consumption and
+        // redundent computation during analysis
+        std::unordered_map<const llvm::Value*, PointToMap> regfile_;
 
         // consequent store after a specific basic block up to the point of the analysis
         std::unordered_map<const llvm::BasicBlock*, AbstractStore> exec_store_cache_;
@@ -43,6 +45,8 @@ namespace mh
 
     public:
         auto Environment() const noexcept { return env_; }
+
+        auto LastSummary() const noexcept { return summary_entry_; }
 
         auto& Solver() noexcept { return smt_solver_; }
 
@@ -101,16 +105,19 @@ namespace mh
          */
         bool CommitExecution(const llvm::BasicBlock* bb, std::unique_ptr<AbstractExecution> exec);
 
-        AbstractStore ExportStore()
-        {
-            AbstractStore result = std::move(exec_store_cache_.at(&summary_entry_->func->back()));
-            for (auto& [reg, pt_map] : regfile_)
-            {
-                result[LocationVar::FromRegister(reg)] = std::move(pt_map);
-            }
+        /**
+         * Update abstract store with analysis of the basic block given. Returns true if consequnt
+         * program state is updated
+         */
+        bool AnalyzeBlock(const llvm::BasicBlock* bb);
 
-            return result;
-        }
+        /**
+         * Export the abstract store after completion of analysis. Note the context object will
+         * enter an invalid state after calling this function and should not be used later.
+         */
+        AbstractStore ExportStore();
+
+        void DebugPrint(const llvm::BasicBlock* bb);
     };
 
     void AnalyzeFunction(SummaryEnvironment& env, const llvm::Function* func);

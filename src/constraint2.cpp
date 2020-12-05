@@ -34,23 +34,28 @@ namespace mh
 
     bool ConstraintSolver::TestEquivalence(const Constraint& c0, const Constraint& c1)
     {
-        if (c0.IsBottomLiteral())
-        {
-            return c1.IsBottomLiteral() || !TestSatisfiability(c1);
-        }
-        else if (c0.IsTopLiteral())
-        {
-            return c1.IsTopLiteral() || TestValidity(c1);
-        }
-        else if (!c1.IsExpr())
-        {
-            return TestEquivalence(c1, c0);
-        }
-        else if (c0.HasMayExpr() != c1.HasMayExpr())
+        if (c0.HasSameMayMust() != c1.HasSameMayMust())
         {
             return false;
         }
-        else if (!c0.HasMayExpr())
+
+        if (c0.IsBottomLiteral())
+        {
+            return !TestSatisfiability(c1);
+        }
+        else if (c0.IsTopLiteral())
+        {
+            return TestValidity(c1);
+        }
+        else if (c1.IsBottomLiteral())
+        {
+            return !TestSatisfiability(c0);
+        }
+        else if (c1.IsTopLiteral())
+        {
+            return TestValidity(c0);
+        }
+        else if (!c0.HasSameMayMust())
         {
             return TestEquivalenceAux(c0.GetMustExpr(), c1.GetMustExpr());
         }
@@ -68,7 +73,7 @@ namespace mh
             std::swap(i, j);
         }
 
-        return alias_rej_list_[i * num_inputs_ + j];
+        return !alias_rej_list_[i * num_inputs_ + j];
     }
 
     void ConstraintSolver::RejectAlias(int i, int j)
@@ -97,7 +102,7 @@ namespace mh
         for (int k = 0; k < j; ++k)
         {
             // k < j <= i
-            if (!TestAlias(k, i))
+            if (TestAlias(k, i))
             {
                 buf.push_back(input_loc_vars_[k] != input_loc_vars_[i]);
             }
@@ -112,9 +117,13 @@ namespace mh
         {
             return Constraint{true};
         }
+        else if (buf.size() == 1)
+        {
+            return buf[0];
+        }
         else
         {
-            return Constraint{static_cast<Z3_ast>(z3::mk_and(buf))};
+            return Constraint{z3::mk_and(buf)};
         }
     }
 } // namespace mh

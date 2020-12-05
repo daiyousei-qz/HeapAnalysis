@@ -133,6 +133,19 @@ namespace mh
         ctx_->LookupRegFile(reg) = PointToMap{{loc, Constraint{true}}};
     }
 
+    void AbstractExecution::DoAlloc(const llvm::Instruction* reg, bool heap_alloc)
+    {
+        LocationVar loc =
+            heap_alloc ? LocationVar::FromHeapAlloc(reg) : LocationVar::FromStackAlloc(reg);
+        ctx_->LookupRegFile(reg) = PointToMap{{loc, Constraint{true}}};
+
+        // PointToMap& ptr_pt_map = store_[loc];
+        // if (ptr_pt_map.empty())
+        // {
+        //     ptr_pt_map.insert(pair{LocationVar::FromProgramValue(nullptr), Constraint{true}});
+        // }
+    }
+
     void AbstractExecution::DoInvoke(const llvm::Instruction* reg,
                                      const std::vector<const llvm::Value*>& inputs,
                                      const FunctionSummary& summary, int call_point)
@@ -189,19 +202,30 @@ namespace mh
         {
             for (auto& [loc_target, constraint] : pt_map)
             {
-                // TODO: fold constant?
-                z3::expr new_may  = constraint.GetMayExpr().substitute(zsrc, zdst_may);
-                z3::expr new_must = constraint.GetMustExpr().substitute(zsrc, zdst_must);
-                constraint        = Constraint{new_may, new_must};
+                // skip literal constraints
+                if (!constraint.IsTopLiteral() && !constraint.IsBottomLiteral())
+                {
+                    z3::expr new_may  = constraint.GetMayExpr().substitute(zsrc, zdst_may);
+                    z3::expr new_must = constraint.GetMustExpr().substitute(zsrc, zdst_must);
+                    constraint        = Constraint{new_may, new_must};
+                }
             }
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        // fmt::print("[Constraint mapping]\n");
-        // for (int i = 0; i < zsrc.size(); ++i)
-        // {
-        //     fmt::print("{} <-> {}\n", zsrc[i].to_string(), zdst[i].to_string());
-        // }
+        fmt::print("[Constraint mapping]\n");
+        for (int i = 0; i < zsrc.size(); ++i)
+        {
+            if (zdst_may == zdst_must)
+            {
+                fmt::print("{} <-> {{{}}}\n", zsrc[i].to_string(), zdst_must[i].to_string());
+            }
+            else
+            {
+                fmt::print("{}: {{{}, {}}}\n", zsrc[i].to_string(), zdst_may[i].to_string(),
+                           zdst_must[i].to_string());
+            }
+        }
 #endif
 
         // step 2: compute mappings of location variables
@@ -273,14 +297,15 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        // fmt::print("[Location mapping]\n");
-        // for (const auto& [loc_p, eq_map] : loc_mappings_pa)
-        // {
-        //     for (const auto& [loc_a, eq_constraint] : eq_map)
-        //     {
-        //         fmt::print("{} <-> {} | {}\n", loc_p, loc_a, eq_constraint);
-        //     }
-        // }
+        fmt::print("[Location mapping]\n");
+        for (const auto& [loc_p, eq_map] : loc_mappings_pa)
+        {
+            fmt::print("| {}\n", loc_p);
+            for (const auto& [loc_a, eq_constraint] : eq_map)
+            {
+                fmt::print("  => {} ? {}\n", loc_a, eq_constraint);
+            }
+        }
 #endif
 
         // step 3: merge callee's heap into current execution
@@ -304,12 +329,15 @@ namespace mh
                     if (loc_pointed_p.Tag() == LocationTag::Dynamic)
                     {
                         // having tag Dynamic
-                        // actual location defined in caller's context
-                        auto iter_pa_mapping = loc_mappings_pa.find(loc_pointed_p);
-                        if (iter_pa_mapping != loc_mappings_pa.end())
+                        // actual location defined in caller's context, and passed into callee
+
+                        if (auto it_pa_mapping = loc_mappings_pa.find(loc_pointed_p);
+                            it_pa_mapping != loc_mappings_pa.end())
                         {
+                            // find the original location defined in caller
+
                             for (const auto& [loc_pointed_a, mapping_constraint] :
-                                 iter_pa_mapping->second)
+                                 it_pa_mapping->second)
                             {
                                 // under mapping_constraint, loc_pointed_p <=> loc_pointed_a
                                 AddPointToEdge(new_pt_map, loc_pointed_a,
@@ -322,7 +350,8 @@ namespace mh
                     {
                         // having tag Value/StackAlloc/HeapAlloc
                         // actual location defined in callee's context
-                        AddPointToEdge(new_pt_map, loc_pointed_p.Rebrand(call_point),
+
+                        AddPointToEdge(new_pt_map, loc_pointed_p.Relabel(call_point),
                                        eq_constraint && pt_constraint);
                     }
                 }
@@ -335,12 +364,12 @@ namespace mh
             }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-            // fmt::print("rewriting ptmap of {}\n", loc_a);
-            // for (auto& [loc_target, constraint] : new_pt_map)
-            // {
-            //     constraint.Simplify();
-            //     fmt::print("  -> {} ? {}\n", loc_target, constraint);
-            // }
+            fmt::print("rewriting ptmap of {}\n", loc_a);
+            for (auto& [loc_target, constraint] : new_pt_map)
+            {
+                constraint.Simplify();
+                fmt::print("  -> {} ? {}\n", loc_target, constraint);
+            }
 #endif
             store_[loc_a] = std::move(new_pt_map);
         }
@@ -358,11 +387,14 @@ namespace mh
         const PointToMap& ptr_loc_pt_map = ctx_->LookupRegFile(reg_ptr);
         for (const auto& [ptr, ptr_constraint] : ptr_loc_pt_map)
         {
-            for (const auto& [val, val_constraint] : store_.at(ptr))
+            if (auto it = store_.find(ptr); it != store_.end())
             {
-                AddPointToEdge(pt_map, val, ptr_constraint && val_constraint);
-                // fmt::print("  add edge {} ? [ptr:{}; val: {}]\n", val, ptr_constraint,
-                // val_constraint);
+                for (const auto& [val, val_constraint] : it->second)
+                {
+                    AddPointToEdge(pt_map, val, ptr_constraint && val_constraint);
+                    // fmt::print("  add edge {} ? [ptr:{}; val: {}]\n", val, ptr_constraint,
+                    // val_constraint);
+                }
             }
         }
     }

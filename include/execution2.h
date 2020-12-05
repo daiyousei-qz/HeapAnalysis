@@ -8,18 +8,17 @@ namespace mh
     struct FunctionSummary;
     class AnalysisContext;
 
+    // { point-to edge = (target-loc, constraint) }
     using PointToMap = std::unordered_map<LocationVar, Constraint>;
 
     // loc -> {point-to edge}
     using AbstractStore = std::unordered_map<LocationVar, PointToMap>;
 
-    // reg-loc -> {point-to edge}
-    // because of SSA form, specialize this from AbstractStore to reduce memory consumption
-    using AbstractRegisterFile = std::unordered_map<const llvm::Value*, PointToMap>;
-
+    // add a new point-to edge into a PointToMap, if target location already exist, constraint
+    // will be merged with disjunction
     void AddPointToEdge(PointToMap& edges, const LocationVar& loc, const Constraint& c);
 
-    // simpilify constraint terms and filter unsatisfiable point-to edges from the store
+    // simpilify constraint terms and erase unsatisfiable point-to edges from the store
     void NormalizeStore(ConstraintSolver& solver, AbstractStore& store);
 
     // assuming all constraints in PointToMap are satisfiable
@@ -49,6 +48,8 @@ namespace mh
 
         // %x = alloca/malloc
         void DoAssign(const llvm::Instruction* reg, LocationVar loc);
+
+        void DoAlloc(const llvm::Instruction* reg, bool heap_alloc);
 
         // %x = f(?)
         void DoInvoke(const llvm::Instruction* reg, const std::vector<const llvm::Value*>& inputs,

@@ -1,11 +1,10 @@
 #pragma once
+#include "fmt-utils2.h"
 #include "location.h"
 #include "analysis.h"
 #include "fmt/format.h"
 #include <string>
 #include <queue>
-
-#define HEAP_ANALYSIS_PRESENTATION_PRINT 1
 
 namespace fmt
 {
@@ -37,31 +36,31 @@ namespace fmt
         }
     };
 
-    template <> struct formatter<llvm::Value> : formatter<std::string_view>
-    {
-        // parse is inherited from formatter<string_view>.
-        template <typename FormatContext> auto format(const llvm::Value& c, FormatContext& ctx)
-        {
-            std::string buf;
-            llvm::raw_string_ostream ss{buf};
-            c.print(ss);
+    // template <> struct formatter<llvm::Value> : formatter<std::string_view>
+    // {
+    //     // parse is inherited from formatter<string_view>.
+    //     template <typename FormatContext> auto format(const llvm::Value& c, FormatContext& ctx)
+    //     {
+    //         std::string buf;
+    //         llvm::raw_string_ostream ss{buf};
+    //         c.print(ss);
 
-            return formatter<std::string_view>::format(buf, ctx);
-        }
-    };
+    //         return formatter<std::string_view>::format(buf, ctx);
+    //     }
+    // };
 
-    template <> struct formatter<llvm::Type> : formatter<std::string_view>
-    {
-        // parse is inherited from formatter<string_view>.
-        template <typename FormatContext> auto format(const llvm::Type& c, FormatContext& ctx)
-        {
-            std::string buf;
-            llvm::raw_string_ostream ss{buf};
-            ss << c;
+    // template <> struct formatter<llvm::Type> : formatter<std::string_view>
+    // {
+    //     // parse is inherited from formatter<string_view>.
+    //     template <typename FormatContext> auto format(const llvm::Type& c, FormatContext& ctx)
+    //     {
+    //         std::string buf;
+    //         llvm::raw_string_ostream ss{buf};
+    //         ss << c;
 
-            return formatter<std::string_view>::format(buf, ctx);
-        }
-    };
+    //         return formatter<std::string_view>::format(buf, ctx);
+    //     }
+    // };
 
     template <> struct formatter<Constraint> : formatter<std::string_view>
     {

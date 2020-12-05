@@ -9,7 +9,7 @@
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/Analysis/CFG.h"
 #include <vector>
-#include <set>
+#include <unordered_set>
 
 namespace mh
 {
@@ -37,10 +37,8 @@ namespace mh
         // abstract store at the exit point of the function
         AbstractStore store = {};
 
-        bool computed = false;
-
-    public:
-        FunctionSummary(SummaryEnvironment& env, const llvm::Function* func);
+        // a summary is converged iff it's computed after all its called function is converged
+        bool converged = false;
     };
 
     class SummaryEnvironment
@@ -59,10 +57,10 @@ namespace mh
             }
             else
             {
-                const auto& [kv, is_insert] = analysis_memory.insert_or_assign(
-                    func, std::make_unique<FunctionSummary>(*this, func));
+                auto& summary = *(analysis_memory[func] = std::make_unique<FunctionSummary>());
+                InitializeSummary(summary, func);
 
-                return *kv->second;
+                return summary;
             }
         }
 
@@ -70,5 +68,8 @@ namespace mh
         {
             return *analysis_memory.at(func);
         }
+
+    private:
+        void InitializeSummary(FunctionSummary& summary, const llvm::Function* func);
     };
 } // namespace mh

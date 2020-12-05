@@ -1,4 +1,5 @@
 #pragma once
+#include "fmt-utils2.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Value.h"
@@ -76,7 +77,7 @@ namespace mh
             return call_point_;
         }
 
-        LocationVar Rebrand(int call_point) const noexcept
+        LocationVar Relabel(int call_point) const noexcept
         {
             // TODO: should we differentiate locations tagged with LocationTag::Value?
             assert(tag_ == LocationTag::Value || tag_ == LocationTag::StackAlloc ||
@@ -139,15 +140,90 @@ namespace mh
     }
 } // namespace mh
 
-namespace std
+template <> struct std::hash<mh::LocationVar>
 {
-    template <> struct hash<mh::LocationVar>
+    size_t operator()(mh::LocationVar x) const noexcept
     {
-        size_t operator()(mh::LocationVar x) const noexcept
+        // TODO: use better hash combination algorithm
+        return hash<mh::LocationTag>{}(x.Tag()) ^ hash<int>{}(x.PlaceholderId()) ^
+               hash<const llvm::Value*>{}(x.Definition());
+    }
+};
+
+template <> struct fmt::formatter<mh::LocationTag> : formatter<std::string_view>
+{
+    // parse is inherited from formatter<string_view>.
+    template <typename FormatContext> auto format(mh::LocationTag c, FormatContext& ctx)
+    {
+        std::string_view name = "UnknownLocationTag";
+        switch (c)
         {
-            // TODO: use better hash combination algorithm
-            return hash<mh::LocationTag>{}(x.Tag()) ^ hash<int>{}(x.PlaceholderId()) ^
-                   hash<const llvm::Value*>{}(x.Definition());
+        case mh::LocationTag::Register:
+            name = "Register";
+            break;
+        case mh::LocationTag::Dynamic:
+            name = "Dynamic";
+            break;
+        case mh::LocationTag::Value:
+            name = "Value";
+            break;
+        case mh::LocationTag::StackAlloc:
+            name = "StackAlloc";
+            break;
+        case mh::LocationTag::HeapAlloc:
+            name = "HeapAlloc";
+            break;
         }
-    };
-} // namespace std
+        return formatter<std::string_view>::format(name, ctx);
+    }
+};
+
+template <> struct fmt::formatter<mh::LocationVar> : fmt::formatter<std::string_view>
+{
+    // parse is inherited from formatter<string_view>.
+    template <typename FormatContext> auto format(const mh::LocationVar& c, FormatContext& ctx)
+    {
+#ifdef HEAP_ANALYSIS_PRESENTATION_PRINT
+        switch (c.Tag())
+        {
+        case mh::LocationTag::Value:
+        case mh::LocationTag::StackAlloc:
+        case mh::LocationTag::HeapAlloc:
+            return fmt::format_to(ctx.out(), "{}@{}", *c.Definition(), c.CallPoint());
+
+        default:
+        {
+            auto output_iter = ctx.out();
+            if (c.Tag() == mh::LocationTag::Dynamic)
+            {
+                for (int i = 0; i <= c.DerefLevel(); ++i)
+                {
+                    output_iter = fmt::format_to(output_iter, "*");
+                }
+            }
+
+            if (!c.Definition()->getName().empty())
+            {
+                return fmt::format_to(output_iter, "{}", c.Definition()->getName().str());
+            }
+            else
+            {
+                return fmt::format_to(output_iter, "{}", *c.Definition());
+            }
+        }
+        }
+
+#else
+        if (c.Definition() != nullptr)
+        {
+            return fmt::format_to(ctx.out(), "Loc[{}, {}, {}]", c.Tag(), *c.Definition(),
+                                  c.PlaceholderId());
+        }
+        else
+        {
+            return fmt::format_to(ctx.out(), "Loc[{}, null, {}]", c.Tag(), c.PlaceholderId());
+        }
+
+#endif
+    }
+};

@@ -1,4 +1,5 @@
 #pragma once
+#include "fmt-utils2.h"
 #include "z3++.h"
 #include <set>
 
@@ -11,14 +12,7 @@ namespace mh
         z3::context ctx_;
         std::vector<z3::expr> alias_locs_;
 
-        void ReserveAliasVariables(int n_args)
-        {
-            while (n_args > alias_locs_.size())
-            {
-                auto name = std::to_string(alias_locs_.size());
-                alias_locs_.push_back(ctx_.int_const(name.c_str()));
-            }
-        }
+        SmtProvider() = default;
 
     public:
         static SmtProvider& Current() noexcept
@@ -43,210 +37,95 @@ namespace mh
 
             return std::vector<z3::expr>{alias_locs_.begin(), alias_locs_.begin() + n_args};
         }
+
+    private:
+        void ReserveAliasVariables(int n_args)
+        {
+            while (n_args > alias_locs_.size())
+            {
+                auto name = "x" + std::to_string(alias_locs_.size());
+                alias_locs_.push_back(ctx_.int_const(name.c_str()));
+            }
+        }
     };
 
+    // TODO: try avoid redundent context storage
     class Constraint
     {
-        // TODO: make sure provider is unchanged on operations
     private:
-        enum class State
-        {
-            Top,
-            Bottom,
-            Expr,
-        };
-
-        SmtProvider* provider = &SmtProvider::Current();
-
-        State state = State::Bottom;
-        Z3_ast may  = nullptr;
-        Z3_ast must = nullptr;
+        z3::expr may;
+        z3::expr must;
 
     public:
-        Constraint() {}
+        Constraint() : Constraint(false) {}
         Constraint(bool value)
+            : may(value ? SmtProvider::Current().TopConstraint()
+                        : SmtProvider::Current().BottomConstraint()),
+              must(value ? SmtProvider::Current().TopConstraint()
+                         : SmtProvider::Current().BottomConstraint())
         {
-            if (value)
-            {
-                state = State::Top;
-                may = must = provider->TopConstraint();
-            }
-            else
-            {
-                state = State::Bottom;
-                may = must = provider->BottomConstraint();
-            }
         }
-        Constraint(Z3_ast ast)
+        Constraint(z3::expr expr) : may(expr), must(expr) {}
+        Constraint(z3::expr expr_may, z3::expr expr_must) : may(expr_may), must(expr_must) {}
+
+        bool HasSameMayMust() const noexcept
         {
-            state = State::Expr;
-            may = must = ast;
-        }
-        Constraint(Z3_ast ast_may, Z3_ast ast_must)
-        {
-            state = State::Expr;
-            may   = ast_may;
-            must  = ast_must;
+            return static_cast<Z3_ast>(may) == static_cast<Z3_ast>(must);
         }
 
-        Constraint(const Constraint&) = default;
-        Constraint(Constraint&&)      = default;
-        Constraint& operator=(const Constraint&) = default;
-        Constraint& operator=(Constraint&&) = default;
-
-        bool IsExpr() const noexcept { return state == State::Expr; }
-        bool IsTopLiteral() const noexcept { return state == State::Top; }
-        bool IsBottomLiteral() const noexcept { return state == State::Bottom; }
-
-        bool HasMayExpr() const noexcept { return may != must; }
+        bool IsTopLiteral() const noexcept { return HasSameMayMust() && must.is_true(); }
+        bool IsBottomLiteral() const noexcept { return HasSameMayMust() && must.is_false(); }
 
         // upper bound, weakest constraint
-        z3::expr GetMayExpr() const noexcept
-        {
-            assert(IsExpr());
-            return z3::expr{provider->Context(), may};
-        }
+        z3::expr GetMayExpr() const noexcept { return may; }
         // lower bound, strongest constraint
-        z3::expr GetMustExpr() const noexcept
-        {
-            assert(IsExpr());
-            return z3::expr{provider->Context(), must};
-        }
+        z3::expr GetMustExpr() const noexcept { return must; }
 
         // TODO: need a better name
         Constraint Weaken() const noexcept
         {
-            if (state == State::Top)
-            {
-                return Constraint{provider->TopConstraint(), provider->BottomConstraint()};
-            }
-            if (state == State::Bottom)
-            {
-                return *this;
-            }
-
-            return Constraint{may, provider->BottomConstraint()};
+            return Constraint{may, SmtProvider::Current().BottomConstraint()};
         }
 
         Constraint Combine(const Constraint& c) const noexcept
         {
-            if (state == State::Top)
-            {
-                if (c.state == State::Top)
-                {
-                    return Constraint{true};
-                }
-                else if (c.state == State::Bottom)
-                {
-                    return Constraint{provider->TopConstraint(), provider->BottomConstraint()};
-                }
-            }
-            if (state == State::Bottom)
-            {
-                if (c.state == State::Bottom)
-                {
-                    return Constraint{false};
-                }
-                else if (c.state == State::Top)
-                {
-                    return Constraint{provider->TopConstraint(), provider->BottomConstraint()};
-                }
-            }
-
-            Z3_context ctx = provider->Context();
-            Z3_ast mays[]  = {may, c.may};
-            Z3_ast musts[] = {must, c.must};
-
-            return Constraint{Z3_mk_or(ctx, 2, mays), Z3_mk_and(ctx, 2, musts)};
+            return Constraint{may || c.may, must && c.must};
         }
 
         void Simplify() noexcept
         {
-            // TODO: make sure provider is unchanged
-            if (state != State::Expr)
+            if (HasSameMayMust())
             {
-                return;
-            }
-
-            if (may == must)
-            {
-                may = must = Z3_simplify(provider->Context(), must);
+                may = must = must.simplify();
             }
             else
             {
-                may  = Z3_simplify(provider->Context(), may);
-                must = Z3_simplify(provider->Context(), must);
+                may  = may.simplify();
+                must = must.simplify();
+            }
+        }
+
+        std::string ToString() const
+        {
+            if (HasSameMayMust())
+            {
+                return fmt::format("{{{}}}", must.to_string());
+            }
+            else
+            {
+                return fmt::format("{{{}, {}}}", may.to_string(), must.to_string());
             }
         }
 
         friend Constraint operator&&(const Constraint& lhs, const Constraint& rhs)
         {
-            if (lhs.state == State::Bottom || rhs.state == State::Bottom)
-            {
-                return Constraint{false};
-            }
-            else if (lhs.state == State::Top)
-            {
-                return rhs;
-            }
-            else if (rhs.state == State::Top)
-            {
-                return lhs;
-            }
-            else
-            {
-                Z3_context ctx = lhs.provider->Context();
-                Z3_ast mays[]  = {lhs.may, rhs.may};
-                Z3_ast musts[] = {lhs.must, rhs.must};
-
-                return Constraint{Z3_mk_and(ctx, 2, mays), Z3_mk_and(ctx, 2, musts)};
-            }
+            return Constraint{lhs.may && rhs.may, lhs.must && rhs.must};
         }
         friend Constraint operator||(const Constraint& lhs, const Constraint& rhs)
         {
-            // TODO: make sure provider is unchanged
-            if (lhs.state == State::Top || rhs.state == State::Top)
-            {
-                return Constraint{true};
-            }
-            else if (lhs.state == State::Bottom)
-            {
-                return rhs;
-            }
-            else if (rhs.state == State::Bottom)
-            {
-                return lhs;
-            }
-            else
-            {
-                Z3_context ctx = lhs.provider->Context();
-                Z3_ast mays[]  = {lhs.may, rhs.may};
-                Z3_ast musts[] = {lhs.must, rhs.must};
-
-                return Constraint{Z3_mk_or(ctx, 2, mays), Z3_mk_or(ctx, 2, musts)};
-            }
+            return Constraint{lhs.may || rhs.may, lhs.must || rhs.must};
         }
-        friend Constraint operator!(const Constraint& c)
-        {
-            // TODO: make sure provider is unchanged
-            if (c.state == State::Top)
-            {
-                return Constraint{false};
-            }
-            else if (c.state == State::Bottom)
-            {
-                return Constraint{true};
-            }
-            else if (c.may == c.must)
-            {
-                return Constraint{Z3_mk_not(c.provider->Context(), c.must)};
-            }
-            else
-            {
-                Z3_context ctx = c.provider->Context();
-                return Constraint{Z3_mk_not(ctx, c.may), Z3_mk_not(ctx, c.must)};
-            }
-        }
+        friend Constraint operator!(const Constraint& c) { return Constraint{!c.must, !c.may}; }
     };
 
     class ConstraintSolver
@@ -305,3 +184,12 @@ namespace mh
         bool TestEquivalenceAux(z3::expr e0, z3::expr e1) { return TestValidityAux(e0 == e1); }
     };
 } // namespace mh
+
+template <> struct fmt::formatter<mh::Constraint> : fmt::formatter<std::string_view>
+{
+    // parse is inherited from formatter<string_view>.
+    template <typename FormatContext> auto format(const mh::Constraint& c, FormatContext& ctx)
+    {
+        return formatter<std::string_view>::format(c.ToString(), ctx);
+    }
+};
