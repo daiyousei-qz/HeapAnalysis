@@ -46,10 +46,15 @@ namespace mh
         {
         }
 
-        // %x = alloca/malloc
+        // decrepted
         void DoAssign(const llvm::Instruction* reg, LocationVar loc);
 
+        // %x = alloca/malloc
         void DoAlloc(const llvm::Instruction* reg, bool heap_alloc);
+
+        // %x = phi(v1, v2)
+        void DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,
+                         const llvm::Value* val2);
 
         // %x = f(?)
         void DoInvoke(const llvm::Instruction* reg, const std::vector<const llvm::Value*>& inputs,

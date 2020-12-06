@@ -407,9 +407,13 @@ namespace mh
                 copy(callee_summary.globals.begin(), callee_summary.globals.end(),
                      back_inserter(reg_inputs));
 
-                exec->DoInvoke(call_inst, reg_inputs, callee_summary, GetCallPoint(call_inst));
+                exec->DoInvoke(&inst, reg_inputs, callee_summary, GetCallPoint(call_inst));
                 mh::NormalizeStore(smt_solver_, exec->store_);
                 mh::DebugPrint(exec->store_);
+            }
+            else if (isa<PHINode>(&inst))
+            {
+                exec->DoAssignPhi(&inst, inst.getOperand(0), inst.getOperand(1));
             }
             else
             {

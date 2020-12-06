@@ -139,6 +139,7 @@ namespace mh
             heap_alloc ? LocationVar::FromHeapAlloc(reg) : LocationVar::FromStackAlloc(reg);
         ctx_->LookupRegFile(reg) = PointToMap{{loc, Constraint{true}}};
 
+        // TODO: null
         // PointToMap& ptr_pt_map = store_[loc];
         // if (ptr_pt_map.empty())
         // {
@@ -146,6 +147,37 @@ namespace mh
         // }
     }
 
+    void AbstractExecution::DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,
+                                        const llvm::Value* val2)
+    {
+        const PointToMap& pt_map_1 = ctx_->LookupRegFile(val1);
+        const PointToMap& pt_map_2 = ctx_->LookupRegFile(val2);
+
+        PointToMap& pt_map_update = ctx_->LookupRegFile(reg);
+        pt_map_update.clear();
+
+        for (const auto& [loc, constraint_1] : pt_map_1)
+        {
+            if (auto it = pt_map_2.find(loc); it != pt_map_2.end())
+            {
+                pt_map_update.insert(pair{loc, constraint_1.Combine(it->second)});
+            }
+            else
+            {
+                pt_map_update.insert(pair{loc, constraint_1.Weaken()});
+            }
+        }
+
+        for (const auto& [loc, constraint_2] : pt_map_2)
+        {
+            if (pt_map_1.find(loc) == pt_map_1.end())
+            {
+                pt_map_update.insert(pair{loc, constraint_2.Weaken()});
+            }
+        }
+    }
+
+    // TODO: overwrite retuan value!!!
     void AbstractExecution::DoInvoke(const llvm::Instruction* reg,
                                      const std::vector<const llvm::Value*>& inputs,
                                      const FunctionSummary& summary, int call_point)
@@ -250,8 +282,6 @@ namespace mh
             const Value* input_param = summary.inputs[i];
             const Value* input_arg   = inputs[i];
 
-            int ptr_level = GetPointerNestLevel(input_param->getType());
-
             // initialize buffer
             loc_buffer_a.clear();
             loc_pointed_buffer_a.clear();
@@ -261,6 +291,7 @@ namespace mh
             }
 
             // bfs to construct mappings
+            int ptr_level = GetPointerNestLevel(input_param->getType());
             for (int deref_level = 0; deref_level <= ptr_level; ++deref_level)
             {
                 LocationVar loc_p = LocationVar::FromRuntimeMemory(input_param, deref_level);
@@ -270,10 +301,6 @@ namespace mh
                 {
                     auto [loc_a, constraint] = std::move(loc_buffer_a.front());
                     loc_buffer_a.pop_front();
-
-#ifdef HEAP_ANALYSIS_DEBUG_MODE
-                    constraint.Simplify();
-#endif
 
                     // collect pointed locations of loc_a
                     auto it_pt_map_a = store_.find(loc_a);
@@ -287,8 +314,10 @@ namespace mh
                     }
 
                     // save mappings
-                    loc_mappings_pa[loc_p].insert(pair{loc_a, constraint});
-                    loc_mappings_ap[loc_a].insert(pair{loc_p, constraint});
+                    auto& c_pa = loc_mappings_pa[loc_p][loc_a];
+                    auto& c_ap = loc_mappings_ap[loc_a][loc_p];
+                    c_pa       = c_pa || constraint;
+                    c_ap       = c_ap || constraint;
                 }
 
                 // reuse buffer
