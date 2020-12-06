@@ -104,13 +104,15 @@ namespace mh
             // k < j <= i
             if (TestAlias(k, i))
             {
-                buf.push_back(input_loc_vars_[k] != input_loc_vars_[i]);
+                // NOTE we can't use op != here as it makes a `distince` node
+                // that would invalidate the ast substitution code
+                buf.push_back(provider->CreateNoAliasExpr(i, k));
             }
         }
 
         if (i != j)
         {
-            buf.push_back(input_loc_vars_[j] == input_loc_vars_[i]);
+            buf.push_back(provider->CreateAliasExpr(i, j));
         }
 
         if (buf.empty())

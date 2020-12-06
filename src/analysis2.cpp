@@ -189,37 +189,25 @@ namespace mh
         return result;
     }
 
-    void AnalysisContext::DebugPrint(const BasicBlock* bb)
+    void PrintStore(const AbstractStore& store, const vector<LocationVar>& root_locs,
+                    const AbstractRegFile* regfile           = nullptr,
+                    const vector<const llvm::Value*>* inputs = nullptr,
+                    bool output_graphviz                     = kHeapAnalysisPresentationPrint)
     {
         unordered_set<LocationVar> known_locs;
         deque<LocationVar> important_locs;
 
-        // to print input pointers
-        for (const Value* input_reg : summary_entry_->inputs)
+        for (const auto& loc : root_locs)
         {
-            LocationVar loc = LocationVar::FromRegister(input_reg);
             known_locs.insert(loc);
             important_locs.push_back(loc);
         }
 
-        // to print return value
-        if (const Value* ret_val = summary_entry_->return_inst->getReturnValue();
-            ret_val != nullptr)
-        {
-            LocationVar loc = LocationVar::FromRegister(ret_val);
-            known_locs.insert(loc);
-            important_locs.push_back(loc);
-        }
-
-        fmt::print("Abstract Store:\n");
-
-        PointToMap empty_ptmap;
-        const AbstractStore& store = bb != nullptr ? exec_store_cache_.at(bb) : entry_store_;
-
+        fmt::print("[Abstract Store]\n");
         auto lookup_store = [&](LocationVar loc) -> const PointToMap& {
-            if (loc.Tag() == LocationTag::Register)
+            if (loc.Tag() == LocationTag::Register && regfile != nullptr)
             {
-                return LookupRegFile(loc.Definition());
+                return regfile->at(loc.Definition());
             }
             else if (auto it = store.find(loc); it != store.end())
             {
@@ -227,44 +215,26 @@ namespace mh
             }
             else
             {
+                static const PointToMap empty_ptmap;
                 return empty_ptmap;
             }
         };
 
-        // point-to graph
-        while (!important_locs.empty())
+        // print graphviz header
+        if (output_graphviz)
         {
-            auto loc = important_locs.front();
-            important_locs.pop_front();
+            fmt::print("digraph G {{\n");
 
-            const auto& pt_map = lookup_store(loc);
-
-            fmt::print("| {}\n", loc);
-            for (const auto& [target_loc, constraint] : pt_map)
+            // legend for constraint terms
+            if (inputs != nullptr)
             {
-                fmt::print("  -> {} ? {}\n", target_loc, constraint);
-
-                if (known_locs.find(target_loc) == known_locs.end())
+                for (int i = 0; i < inputs->size(); ++i)
                 {
-                    known_locs.insert(target_loc);
-                    important_locs.push_back(target_loc);
+                    fmt::print("  \"x{}: {}\" [shape=box]\n", i,
+                               LocationVar::FromRegister((*inputs)[i]));
                 }
             }
         }
-    }
-
-    void DebugPrint(const AbstractStore& store)
-    {
-        unordered_set<LocationVar> known_locs;
-        deque<LocationVar> important_locs;
-
-        for (const auto& [loc, pt_map] : store)
-        {
-            known_locs.insert(loc);
-            important_locs.push_back(loc);
-        }
-
-        fmt::print("Abstract Store:\n");
 
         // point-to graph
         while (!important_locs.empty())
@@ -272,73 +242,98 @@ namespace mh
             auto loc = important_locs.front();
             important_locs.pop_front();
 
-            auto it = store.find(loc);
-            if (it == store.end())
+            const PointToMap& pt_map = lookup_store(loc);
+            if (pt_map.empty())
             {
                 continue;
             }
 
-            fmt::print("| {}\n", loc);
-            for (const auto& [target_loc, constraint] : it->second)
+            if (output_graphviz)
             {
-                fmt::print("  -> {} ? {}\n", target_loc, constraint);
-
-                if (known_locs.find(target_loc) == known_locs.end())
+                for (const auto& [target_loc, constraint] : pt_map)
                 {
-                    known_locs.insert(target_loc);
-                    important_locs.push_back(target_loc);
+                    fmt::print("  \"{}\" -> \"{}\" [label=\"{}\"];\n", loc, target_loc, constraint);
+
+                    if (known_locs.find(target_loc) == known_locs.end())
+                    {
+                        known_locs.insert(target_loc);
+                        important_locs.push_back(target_loc);
+                    }
+                }
+            }
+            else
+            {
+                fmt::print("| {}\n", loc);
+                for (const auto& [target_loc, constraint] : pt_map)
+                {
+                    fmt::print("  -> {} ? {}\n", target_loc, constraint);
+
+                    if (known_locs.find(target_loc) == known_locs.end())
+                    {
+                        known_locs.insert(target_loc);
+                        important_locs.push_back(target_loc);
+                    }
                 }
             }
         }
+
+        // print graphviz terminator
+        if (output_graphviz)
+        {
+            fmt::print("}}\n");
+        }
+    }
+
+    void AnalysisContext::DebugPrint(const BasicBlock* bb)
+    {
+        vector<LocationVar> root_locs;
+
+        // to print input pointers
+        for (const Value* input_reg : summary_entry_->inputs)
+        {
+            root_locs.push_back(LocationVar::FromRegister(input_reg));
+        }
+
+        // to print return value
+        if (const Value* ret_val = summary_entry_->return_inst->getReturnValue();
+            ret_val != nullptr)
+        {
+            root_locs.push_back(LocationVar::FromRegister(ret_val));
+        }
+
+        const AbstractStore& store = bb != nullptr ? exec_store_cache_.at(bb) : entry_store_;
+        PrintStore(store, root_locs, &regfile_, &summary_entry_->inputs);
+    }
+
+    void DebugPrint(const AbstractStore& store)
+    {
+        vector<LocationVar> root_locs;
+
+        for (const auto& [loc, pt_map] : store)
+        {
+            root_locs.push_back(loc);
+        }
+
+        PrintStore(store, root_locs, nullptr, nullptr);
     }
 
     void DebugPrint(const FunctionSummary& summary)
     {
-        unordered_set<LocationVar> known_locs;
-        deque<LocationVar> important_locs;
+        vector<LocationVar> root_locs;
 
         // to print input pointers
         for (const Value* input_reg : summary.inputs)
         {
-            LocationVar loc = LocationVar::FromRegister(input_reg);
-            known_locs.insert(loc);
-            important_locs.push_back(loc);
+            root_locs.push_back(LocationVar::FromRegister(input_reg));
         }
 
         // to print return value
         if (const Value* ret_val = summary.return_inst->getReturnValue(); ret_val != nullptr)
         {
-            LocationVar loc = LocationVar::FromRegister(ret_val);
-            known_locs.insert(loc);
-            important_locs.push_back(loc);
+            root_locs.push_back(LocationVar::FromRegister(ret_val));
         }
 
-        fmt::print("Abstract Store:\n");
-
-        // point-to graph
-        while (!important_locs.empty())
-        {
-            auto loc = important_locs.front();
-            important_locs.pop_front();
-
-            auto it = summary.store.find(loc);
-            if (it == summary.store.end())
-            {
-                continue;
-            }
-
-            fmt::print("| {}\n", loc);
-            for (const auto& [target_loc, constraint] : it->second)
-            {
-                fmt::print("  -> {} ? {}\n", target_loc, constraint);
-
-                if (known_locs.find(target_loc) == known_locs.end())
-                {
-                    known_locs.insert(target_loc);
-                    important_locs.push_back(target_loc);
-                }
-            }
-        }
+        PrintStore(summary.store, root_locs, nullptr, &summary.inputs);
     }
 
     bool AnalysisContext::AnalyzeBlock(const llvm::BasicBlock* bb)
@@ -408,8 +403,6 @@ namespace mh
                      back_inserter(reg_inputs));
 
                 exec->DoInvoke(&inst, reg_inputs, callee_summary, GetCallPoint(call_inst));
-                mh::NormalizeStore(smt_solver_, exec->store_);
-                mh::DebugPrint(exec->store_);
             }
             else if (isa<PHINode>(&inst))
             {

@@ -7,20 +7,25 @@ void swap(int* p, int* q)
     *q      = tmp;
 }
 
-// void do_swap(int* a, int* b) { swap(a, b); }
+void do_swap_once(int* a, int* b) { swap(a, b); }
 
-void do_swap2(int* a, int* b)
+void do_swap_twice(int* a, int* b)
 {
     swap(a, b);
     swap(a, b);
 }
 
-// void alloc(int** p) { *p = (int*)malloc(4); }
+void do_swap_alias(int* a, int* b) { swap(a, a); }
 
-// int add_alloc(int** p, int** q)
-// {
-//     alloc(p);
-//     alloc(q);
-
-//     return **p + **q;
-// }
+int* alloc_int(int value)
+{
+    int* p = (int*)malloc(4);
+    *p     = value;
+    return p;
+}
+int add_alloc(int** p, int** q)
+{
+    *p = alloc_int(1);
+    *q = alloc_int(41);
+    return **p + **q;
+}

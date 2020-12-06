@@ -38,7 +38,6 @@ namespace mh
             return std::vector<z3::expr>{alias_locs_.begin(), alias_locs_.begin() + n_args};
         }
 
-    private:
         void ReserveAliasVariables(int n_args)
         {
             while (n_args > alias_locs_.size())
@@ -47,6 +46,26 @@ namespace mh
                 alias_locs_.push_back(ctx_.int_const(name.c_str()));
             }
         }
+
+        z3::expr CreateAliasExpr(int loc_i, int loc_j)
+        {
+            if (loc_i < loc_j)
+            {
+                std::swap(loc_i, loc_j);
+            }
+            assert(loc_i < alias_locs_.size());
+
+            if (loc_i == loc_j)
+            {
+                return ctx_.bool_val(true);
+            }
+            else
+            {
+                return alias_locs_[loc_i] == alias_locs_[loc_j];
+            }
+        }
+
+        z3::expr CreateNoAliasExpr(int loc_i, int loc_j) { return !CreateAliasExpr(loc_i, loc_j); }
     };
 
     // TODO: try avoid redundent context storage

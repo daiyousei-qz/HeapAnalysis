@@ -189,7 +189,14 @@ template <> struct fmt::formatter<mh::LocationVar> : fmt::formatter<std::string_
         case mh::LocationTag::Value:
         case mh::LocationTag::StackAlloc:
         case mh::LocationTag::HeapAlloc:
-            return fmt::format_to(ctx.out(), "{}@{}", *c.Definition(), c.CallPoint());
+            if (c.Definition() == nullptr)
+            {
+                return fmt::format_to(ctx.out(), "null");
+            }
+            else
+            {
+                return fmt::format_to(ctx.out(), "{}@{}", *c.Definition(), c.CallPoint());
+            }
 
         default:
         {

@@ -35,6 +35,8 @@ namespace mh
         const llvm::ReturnInst* return_inst;
 
         // abstract store at the exit point of the function
+        // Note while locations with tag Register are stored in a specialized container regfile,
+        // they are in the same store when written in summary
         AbstractStore store = {};
 
         // a summary is converged iff it's computed after all its called function is converged

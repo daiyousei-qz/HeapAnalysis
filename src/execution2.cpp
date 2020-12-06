@@ -139,12 +139,12 @@ namespace mh
             heap_alloc ? LocationVar::FromHeapAlloc(reg) : LocationVar::FromStackAlloc(reg);
         ctx_->LookupRegFile(reg) = PointToMap{{loc, Constraint{true}}};
 
-        // TODO: null
-        // PointToMap& ptr_pt_map = store_[loc];
-        // if (ptr_pt_map.empty())
-        // {
-        //     ptr_pt_map.insert(pair{LocationVar::FromProgramValue(nullptr), Constraint{true}});
-        // }
+        // assign null on allocation
+        PointToMap& ptr_pt_map = store_[loc];
+        if (ptr_pt_map.empty())
+        {
+            ptr_pt_map.insert(pair{LocationVar::FromProgramValue(nullptr), Constraint{true}});
+        }
     }
 
     void AbstractExecution::DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,
@@ -177,7 +177,8 @@ namespace mh
         }
     }
 
-    // TODO: overwrite retuan value!!!
+    // TODO: move explicit z3 calls into constraint module?
+    // TODO: copy some value location into caller's context as well
     void AbstractExecution::DoInvoke(const llvm::Instruction* reg,
                                      const std::vector<const llvm::Value*>& inputs,
                                      const FunctionSummary& summary, int call_point)
@@ -187,10 +188,6 @@ namespace mh
         // we want to convert alias constraint from callee's context into call sites'
         // say in invocation f(a1, a2, ...), constraint variables are x1, x2, ...
         // term alias(xi, xj) should be translated into alias(ai, aj)
-
-        // TODO: filter out non-ptr argument to be consistant with analysis input
-        // collection
-        // TODO: move explicit z3 calls into constraint module?
 
         z3::expr_vector zsrc{SmtProvider::Current().Context()};
         z3::expr_vector zdst_may{SmtProvider::Current().Context()};
@@ -221,14 +218,13 @@ namespace mh
                 c_alias_ij.Simplify();
 
                 auto& smt_provider = SmtProvider::Current();
-                zsrc.push_back(smt_provider.AliasLocation(j) == smt_provider.AliasLocation(i));
+                zsrc.push_back(smt_provider.CreateAliasExpr(i, j));
                 zdst_may.push_back(c_alias_ij.GetMayExpr());
                 zdst_must.push_back(c_alias_ij.GetMustExpr());
             }
         }
 
-        // TODO: regfile?
-        // TODO: z3 ast distanct?
+        // TODO: avoid substitution of unimportant locations like average instructions
         AbstractStore result_store = summary.store;
         for (auto& [loc_src, pt_map] : result_store)
         {
@@ -271,6 +267,7 @@ namespace mh
         unordered_map<LocationVar, PointToMap> loc_mappings_pa;
         // argument-space -> parameter-space
         unordered_map<LocationVar, PointToMap> loc_mappings_ap;
+
         // buffer of argument-space locations to be mapped
         // constraint should be an accumulation of constraint in the path from reg to loc
         deque<pair<LocationVar, Constraint>> loc_buffer_a;
@@ -360,19 +357,13 @@ namespace mh
                         // having tag Dynamic
                         // actual location defined in caller's context, and passed into callee
 
-                        if (auto it_pa_mapping = loc_mappings_pa.find(loc_pointed_p);
-                            it_pa_mapping != loc_mappings_pa.end())
+                        // find the original location defined in caller
+                        for (const auto& [loc_pointed_a, mapping_constraint] :
+                             loc_mappings_pa.at(loc_pointed_p))
                         {
-                            // find the original location defined in caller
-
-                            for (const auto& [loc_pointed_a, mapping_constraint] :
-                                 it_pa_mapping->second)
-                            {
-                                // under mapping_constraint, loc_pointed_p <=> loc_pointed_a
-                                AddPointToEdge(new_pt_map, loc_pointed_a,
-                                               eq_constraint && pt_constraint &&
-                                                   mapping_constraint);
-                            }
+                            // under mapping_constraint, loc_pointed_p <=> loc_pointed_a
+                            AddPointToEdge(new_pt_map, loc_pointed_a,
+                                           eq_constraint && pt_constraint && mapping_constraint);
                         }
                     }
                     else
@@ -400,7 +391,42 @@ namespace mh
                 fmt::print("  -> {} ? {}\n", loc_target, constraint);
             }
 #endif
-            store_[loc_a] = std::move(new_pt_map);
+            store_[loc_a] = move(new_pt_map);
+        }
+
+        const Value* ret_val      = summary.return_inst->getReturnValue();
+        PointToMap& pt_map_update = ctx_->LookupRegFile(reg);
+        pt_map_update.clear();
+        if (ret_val != nullptr)
+        {
+            LocationVar loc_ret_p = LocationVar::FromRegister(ret_val);
+
+            for (const auto& [loc_pointed_p, pt_constraint] : result_store.at(loc_ret_p))
+            {
+                assert(loc_pointed_p.Tag() != LocationTag::Register);
+
+                if (loc_pointed_p.Tag() == LocationTag::Dynamic)
+                {
+                    // having tag Dynamic
+                    // actual location defined in caller's context, and passed into callee
+
+                    // find the original location defined in caller
+                    for (const auto& [loc_pointed_a, mapping_constraint] :
+                         loc_mappings_pa.at(loc_pointed_p))
+                    {
+                        // under mapping_constraint, loc_pointed_p <=> loc_pointed_a
+                        AddPointToEdge(pt_map_update, loc_pointed_a,
+                                       pt_constraint && mapping_constraint);
+                    }
+                }
+                else
+                {
+                    // having tag Value/StackAlloc/HeapAlloc
+                    // actual location defined in callee's context
+
+                    AddPointToEdge(pt_map_update, loc_pointed_p.Relabel(call_point), pt_constraint);
+                }
+            }
         }
     }
 

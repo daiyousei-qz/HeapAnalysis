@@ -8,7 +8,13 @@
 #include <string_view>
 
 #ifndef HEAP_ANALYSIS_PRESENTATION_PRINT
-//#define HEAP_ANALYSIS_PRESENTATION_PRINT 1
+// #define HEAP_ANALYSIS_PRESENTATION_PRINT 1
+#endif
+
+#ifdef HEAP_ANALYSIS_PRESENTATION_PRINT
+inline constexpr bool kHeapAnalysisPresentationPrint = true;
+#else
+inline constexpr bool kHeapAnalysisPresentationPrint = false;
 #endif
 
 template <> struct fmt::formatter<llvm::StringRef> : fmt::formatter<std::string_view>

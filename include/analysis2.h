@@ -12,6 +12,12 @@
 
 namespace mh
 {
+    // A specialized AbstractStore that stores point-to maps from locations with
+    // tag register, i.e. llvm::Value*
+    // Such practice reduce memory consumption and redundent computation during analysis because of
+    // SSA form
+    using AbstractRegFile = std::unordered_map<const llvm::Value*, PointToMap>;
+
     class AnalysisContext
     {
     private:
@@ -33,9 +39,7 @@ namespace mh
         AbstractStore entry_store_;
 
         // consequent register file up to the point of the analysis
-        // because of SSA form, specialize this from AbstractStore to reduce memory consumption and
-        // redundent computation during analysis
-        std::unordered_map<const llvm::Value*, PointToMap> regfile_;
+        AbstractRegFile regfile_;
 
         // consequent store after a specific basic block up to the point of the analysis
         std::unordered_map<const llvm::BasicBlock*, AbstractStore> exec_store_cache_;
@@ -81,6 +85,10 @@ namespace mh
             }
         }
 
+        /**
+         * Get a program point identifier to distinguish locations allocated with the same
+         * definition but in different calls
+         */
         int GetCallPoint(const llvm::Instruction* inst)
         {
             auto it = call_point_cache_.find(inst);
