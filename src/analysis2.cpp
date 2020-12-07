@@ -9,18 +9,10 @@ using namespace llvm;
 namespace mh
 {
     AnalysisContext::AnalysisContext(const SummaryEnvironment* env, const FunctionSummary* summary)
-        : smt_solver_(summary->inputs.size())
+        : smt_solver_(summary->inputs.size()), ctrl_flow_info_(summary->func)
     {
         this->env_           = env;
         this->summary_entry_ = summary;
-
-        // collect backward control flow edges
-        {
-            SmallVector<pair<const BasicBlock*, const BasicBlock*>, 8> buffer;
-            FindFunctionBackedges(*summary->func, buffer);
-
-            this->backedges_ = set<ControlFlowEdge>(buffer.begin(), buffer.end());
-        }
 
         // add alias rejection
         const vector<const Value*>& inputs = summary->inputs;
@@ -128,7 +120,7 @@ namespace mh
         // merge
         for (const BasicBlock* pred_bb : predecessors(bb))
         {
-            bool loopback = backedges_.find(pair{pred_bb, bb}) != backedges_.end();
+            bool loopback = ctrl_flow_info_.IsBackEdge(pred_bb, bb);
             if (auto it = exec_store_cache_.find(pred_bb); it != exec_store_cache_.end())
             {
                 merge_store(it->second);
@@ -187,6 +179,88 @@ namespace mh
         }
 
         return result;
+    }
+
+    void AnalysisContext::ExportRAWDependency()
+    {
+        vector<const StoreInst*> stores;
+        vector<const LoadInst*> loads;
+        unordered_map<const Instruction*, int> inst_index_lookup;
+
+        for (const BasicBlock& bb : *summary_entry_->func)
+        {
+            int index = 0;
+            for (const Instruction& inst : bb)
+            {
+                if (auto store_inst = dyn_cast<StoreInst>(&inst))
+                {
+                    stores.push_back(store_inst);
+                    inst_index_lookup[store_inst] = index;
+                }
+                else if (auto load_inst = dyn_cast<LoadInst>(&inst))
+                {
+                    loads.push_back(load_inst);
+                    inst_index_lookup[load_inst] = index;
+                }
+
+                index += 1;
+            }
+        }
+
+        auto test_may_alias = [&](const Value* store_ptr_reg, const Value* load_ptr_reg) {
+            store_ptr_reg = TranslateAliasReg(store_ptr_reg);
+            load_ptr_reg  = TranslateAliasReg(load_ptr_reg);
+
+            const PointToMap& store_pt_map = regfile_.at(store_ptr_reg);
+            const PointToMap& load_pt_map  = regfile_.at(load_ptr_reg);
+            for (const auto& [loc, c_store_ptr] : store_pt_map)
+            {
+                auto iter = load_pt_map.find(loc);
+                if (iter != load_pt_map.end())
+                {
+                    const auto& c_load_ptr = iter->second;
+                    if (smt_solver_.TestSatisfiability(c_store_ptr && c_load_ptr))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        };
+
+        auto store_may_exec_before_load = [&](const StoreInst* store_inst,
+                                              const LoadInst* load_inst) {
+            const BasicBlock* bb_store = store_inst->getParent();
+            const BasicBlock* bb_load  = load_inst->getParent();
+            if (bb_store == bb_load)
+            {
+                return inst_index_lookup[load_inst] > inst_index_lookup[store_inst];
+            }
+            else
+            {
+                return ctrl_flow_info_.LookupExecAfterCondition(bb_store, bb_load) !=
+                       ExecAfterCondition::Never;
+            }
+        };
+
+        vector<pair<const StoreInst*, const LoadInst*>> pdg_edges;
+        for (const LoadInst* load_inst : loads)
+        {
+            for (const StoreInst* store_inst : stores)
+            {
+                if (store_may_exec_before_load(store_inst, load_inst))
+                {
+                    const Value* store_ptr = store_inst->getPointerOperand();
+                    const Value* load_ptr  = load_inst->getPointerOperand();
+
+                    if (store_ptr == load_ptr || test_may_alias(store_ptr, load_ptr))
+                    {
+                        pdg_edges.push_back(pair{store_inst, load_inst});
+                    }
+                }
+            }
+        }
     }
 
     void PrintStore(const AbstractStore& store, const vector<LocationVar>& root_locs,
@@ -402,7 +476,7 @@ namespace mh
                 copy(callee_summary.globals.begin(), callee_summary.globals.end(),
                      back_inserter(reg_inputs));
 
-                exec->DoInvoke(&inst, reg_inputs, callee_summary, GetCallPoint(call_inst));
+                exec->DoInvoke(&inst, reg_inputs, callee_summary);
             }
             else if (isa<PHINode>(&inst))
             {
@@ -417,33 +491,23 @@ namespace mh
         return CommitExecution(bb, move(exec));
     }
 
-    void AnalyzeFunctionAux(SummaryEnvironment& env, FunctionSummary& summary)
+    // analyze the function once, assuming summaries of all called functions ready
+    void AnalyzeFunctionAux(SummaryEnvironment& env, FunctionSummary& summary,
+                            bool dependencies_converged = false)
     {
         if (summary.converged)
         {
             return;
         }
 
-        for (const Function* called_func : summary.called_functions)
-        {
-            FunctionSummary& called_func_summary = env.LookupSummary(called_func);
-            if (!called_func_summary.converged && called_func_summary.func->doesNotRecurse())
-            {
-                AnalyzeFunctionAux(env, called_func_summary);
-            }
-        }
-
-        const Function* func = summary.func;
-
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         llvm::outs() << "---------\n";
-        llvm::outs() << *func << "\n";
+        llvm::outs() << *summary.func << "\n";
 #endif
-
-        // InitializePdgAnalysis();
 
         AnalysisContext ctx{&env, &summary};
 
+        const Function* func = summary.func;
         unordered_set<const BasicBlock*> workset{&func->front()};
         deque<const BasicBlock*> worklist{&func->front()};
 
@@ -468,17 +532,14 @@ namespace mh
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         ctx.DebugPrint(&func->back());
-        // PrintPdgEdge();
 #endif
 
-        // TODO: update summary
         // TODO: what solver to use?
         AbstractStore result_store = ctx.ExportStore();
         if (summary.store.empty() || !EqualAbstractStore(ctx.Solver(), summary.store, result_store))
         {
             summary.store = move(result_store);
-            // TODO: support recursive functions
-            if (func->doesNotRecurse())
+            if (dependencies_converged)
             {
                 summary.converged = true;
             }
@@ -489,9 +550,73 @@ namespace mh
         }
     }
 
+    void AnalyzeFunctionRecursive(SummaryEnvironment& env, FunctionSummary& summary,
+                                  unordered_set<const Function*>& analysis_history,
+                                  bool expect_converge)
+    {
+        if (analysis_history.find(summary.func) != analysis_history.end())
+        {
+            if (summary.store.empty())
+            {
+                // TODO: do some initialization?
+            }
+
+            return;
+        }
+
+        vector<FunctionSummary*> recursive_summaries;
+        for (const Function* called_func : summary.called_functions)
+        {
+            FunctionSummary& called_summary = env.LookupSummary(called_func);
+            if (called_summary.func->doesNotRecurse())
+            {
+                if (!called_summary.converged)
+                {
+                    AnalyzeFunctionRecursive(env, called_summary, analysis_history, true);
+                }
+
+                assert(called_summary.converged);
+            }
+            else
+            {
+                recursive_summaries.push_back(&called_summary);
+            }
+        }
+
+        analysis_history.insert(summary.func);
+
+        do
+        {
+            bool dep_converged = true;
+            for (FunctionSummary* called_summmary : recursive_summaries)
+            {
+                if (!called_summmary->converged)
+                {
+                    AnalyzeFunctionRecursive(env, *called_summmary, analysis_history,
+                                             summary.func->doesNotRecurse());
+                }
+
+                dep_converged = dep_converged && called_summmary->converged;
+            }
+
+            AnalyzeFunctionAux(env, summary, dep_converged);
+        } while (expect_converge && !summary.converged);
+
+        analysis_history.erase(summary.func);
+    }
+
+    // TODO: llvm::Function::doesNotRecurse doesn't return the correct result
+    //  need an analysis to detect recursion
     void AnalyzeFunction(SummaryEnvironment& env, const Function* func)
     {
-        AnalyzeFunctionAux(env, env.LookupSummary(func));
+        FunctionSummary& summary = env.LookupSummary(func);
+        if (summary.converged)
+        {
+            return;
+        }
+
+        unordered_set<const Function*> analysis_history;
+        AnalyzeFunctionRecursive(env, summary, analysis_history, true);
     }
 
 } // namespace mh

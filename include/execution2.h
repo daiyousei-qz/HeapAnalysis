@@ -58,7 +58,7 @@ namespace mh
 
         // %x = f(?)
         void DoInvoke(const llvm::Instruction* reg, const std::vector<const llvm::Value*>& inputs,
-                      const FunctionSummary& summary, int call_point);
+                      const FunctionSummary& summary);
 
         // %x = *p
         void DoLoad(const llvm::Instruction* reg, const llvm::Value* reg_ptr);

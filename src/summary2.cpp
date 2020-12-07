@@ -5,6 +5,46 @@ using namespace llvm;
 
 namespace mh
 {
+    FunctionSummary& SummaryEnvironment::LookupSummary(const llvm::Function* func)
+    {
+        if (auto it = analysis_memory.find(func); it != analysis_memory.end())
+        {
+            return *it->second;
+        }
+        else
+        {
+            auto& summary = *(analysis_memory[func] = std::make_unique<FunctionSummary>());
+            InitializeSummary(summary, func);
+
+            return summary;
+        }
+    }
+
+    const FunctionSummary& SummaryEnvironment::LookupSummary(const llvm::Function* func) const
+    {
+        return *analysis_memory.at(func);
+    }
+
+    int SummaryEnvironment::ComputeCallPoint(const llvm::Instruction* inst,
+                                             int prev_call_point) const
+    {
+        assert(inst != nullptr && prev_call_point >= 0);
+
+        if (auto it = call_point_lookup.find(CallPointData{inst, prev_call_point});
+            it != call_point_lookup.end())
+        {
+            return it->second;
+        }
+        else
+        {
+            int result = call_point_cache.size() + 1;
+            call_point_cache.push_back(CallPointData{inst, prev_call_point});
+            call_point_lookup[CallPointData{inst, prev_call_point}] = result;
+
+            return result;
+        }
+    }
+
     void SummaryEnvironment::InitializeSummary(FunctionSummary& summary, const llvm::Function* func)
     {
         summary.func = func;

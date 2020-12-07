@@ -138,6 +138,21 @@ namespace mh
     {
         return !(lhs == rhs);
     }
+
+    struct CallPointData
+    {
+        const llvm::Instruction* inst;
+        int prev_call_point;
+    };
+
+    inline bool operator==(const CallPointData& lhs, const CallPointData& rhs)
+    {
+        return lhs.inst == rhs.inst && lhs.prev_call_point == rhs.prev_call_point;
+    }
+    inline bool operator!=(const CallPointData& lhs, const CallPointData& rhs)
+    {
+        return !(lhs == rhs);
+    }
 } // namespace mh
 
 template <> struct std::hash<mh::LocationVar>
@@ -232,5 +247,15 @@ template <> struct fmt::formatter<mh::LocationVar> : fmt::formatter<std::string_
         }
 
 #endif
+    }
+};
+
+template <> struct std::hash<mh::CallPointData>
+{
+    size_t operator()(const mh::CallPointData& data) const noexcept
+    {
+
+        return std::hash<const llvm::Instruction*>{}(data.inst) * 31 +
+               std::hash<int>{}(data.prev_call_point);
     }
 };

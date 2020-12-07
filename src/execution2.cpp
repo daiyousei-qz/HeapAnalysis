@@ -181,7 +181,7 @@ namespace mh
     // TODO: copy some value location into caller's context as well
     void AbstractExecution::DoInvoke(const llvm::Instruction* reg,
                                      const std::vector<const llvm::Value*>& inputs,
-                                     const FunctionSummary& summary, int call_point)
+                                     const FunctionSummary& summary)
     {
         // step 1: rewrite constraint terms
         //
@@ -371,7 +371,9 @@ namespace mh
                         // having tag Value/StackAlloc/HeapAlloc
                         // actual location defined in callee's context
 
-                        AddPointToEdge(new_pt_map, loc_pointed_p.Relabel(call_point),
+                        AddPointToEdge(new_pt_map,
+                                       loc_pointed_p.Relabel(
+                                           ctx_->GetCallPoint(reg, loc_pointed_p.CallPoint())),
                                        eq_constraint && pt_constraint);
                     }
                 }
@@ -424,7 +426,10 @@ namespace mh
                     // having tag Value/StackAlloc/HeapAlloc
                     // actual location defined in callee's context
 
-                    AddPointToEdge(pt_map_update, loc_pointed_p.Relabel(call_point), pt_constraint);
+                    AddPointToEdge(
+                        pt_map_update,
+                        loc_pointed_p.Relabel(ctx_->GetCallPoint(reg, loc_pointed_p.CallPoint())),
+                        pt_constraint);
                 }
             }
         }

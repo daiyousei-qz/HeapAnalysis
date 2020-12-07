@@ -3,6 +3,7 @@
 #include "execution2.h"
 #include "location2.h"
 #include "summary2.h"
+#include "controlflow.h"
 #include "llvm-utils.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instruction.h"
@@ -27,10 +28,7 @@ namespace mh
 
         ConstraintSolver smt_solver_;
 
-        // (source, target)
-        // cache for quickly determing if a control edge is jumping backward
-        using ControlFlowEdge = std::pair<const llvm::BasicBlock*, const llvm::BasicBlock*>;
-        std::set<ControlFlowEdge> backedges_;
+        FunctionControlFlowInfo ctrl_flow_info_;
 
         // a cache of indices to identify different program point
         std::unordered_map<const llvm::Instruction*, int> call_point_cache_;
@@ -89,17 +87,9 @@ namespace mh
          * Get a program point identifier to distinguish locations allocated with the same
          * definition but in different calls
          */
-        int GetCallPoint(const llvm::Instruction* inst)
+        int GetCallPoint(const llvm::Instruction* inst, int prev_call_point)
         {
-            auto it = call_point_cache_.find(inst);
-            if (it != call_point_cache_.end())
-            {
-                return it->second;
-            }
-
-            int next_call_pt = static_cast<int>(call_point_cache_.size()) + 1;
-            call_point_cache_.insert({inst, next_call_pt});
-            return next_call_pt;
+            return env_->ComputeCallPoint(inst, prev_call_point);
         }
 
         /**
@@ -124,6 +114,8 @@ namespace mh
          * enter an invalid state after calling this function and should not be used later.
          */
         AbstractStore ExportStore();
+
+        void ExportRAWDependency();
 
         void DebugPrint(const llvm::BasicBlock* bb);
     };

@@ -48,28 +48,17 @@ namespace mh
     private:
         std::unordered_map<const llvm::Function*, std::unique_ptr<FunctionSummary>> analysis_memory;
 
+        mutable std::vector<CallPointData> call_point_cache;
+        mutable std::unordered_map<CallPointData, int> call_point_lookup;
+
     public:
         SummaryEnvironment() = default;
 
-        FunctionSummary& LookupSummary(const llvm::Function* func)
-        {
-            if (auto it = analysis_memory.find(func); it != analysis_memory.end())
-            {
-                return *it->second;
-            }
-            else
-            {
-                auto& summary = *(analysis_memory[func] = std::make_unique<FunctionSummary>());
-                InitializeSummary(summary, func);
+        FunctionSummary& LookupSummary(const llvm::Function* func);
 
-                return summary;
-            }
-        }
+        const FunctionSummary& LookupSummary(const llvm::Function* func) const;
 
-        const FunctionSummary& LookupSummary(const llvm::Function* func) const
-        {
-            return *analysis_memory.at(func);
-        }
+        int ComputeCallPoint(const llvm::Instruction* inst, int prev_call_point) const;
 
     private:
         void InitializeSummary(FunctionSummary& summary, const llvm::Function* func);
