@@ -177,7 +177,10 @@ namespace mh
         // test if a constraint always holds
         bool TestValidity(const Constraint& c);
 
-        // test if two constraints are equivalent
+        // test if c0 => c1
+        bool TestImplication(const Constraint& c0, const Constraint& c1);
+
+        // test if c0 <=> c1
         bool TestEquivalence(const Constraint& c0, const Constraint& c1);
 
         // test if two input x_i and x_j could alias (not rejected)
@@ -199,6 +202,10 @@ namespace mh
         {
             z3::expr c_expr = !expr;
             return solver.check(1, &c_expr) == z3::unsat;
+        }
+        bool TestImplicationAux(z3::expr e0, z3::expr e1)
+        {
+            return TestValidityAux(z3::implies(e0, e1));
         }
         bool TestEquivalenceAux(z3::expr e0, z3::expr e1) { return TestValidityAux(e0 == e1); }
     };

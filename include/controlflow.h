@@ -25,6 +25,10 @@ namespace mh
             std::unordered_map<const llvm::BasicBlock*, ExecAfterCondition>;
         std::unordered_map<const llvm::BasicBlock*, ExecAfterConditionMap> exec_after_lookup_;
 
+        // for two instruction inst1, inst2 in the same basic block
+        // guranteed that inst1 comes before inst2 if f(inst1) < f(inst2)
+        std::unordered_map<const llvm::Instruction*, int> inst_index_lookup_;
+
     public:
         FunctionControlFlowInfo(const llvm::Function* func);
 
@@ -37,10 +41,10 @@ namespace mh
         }
 
         /**
-         * Lookup execution order between src and dst.
+         * Lookup execution order between basic blocks src and dst, if dst could execute after src
          */
         ExecAfterCondition LookupExecAfterCondition(const llvm::BasicBlock* src,
-                                                    const llvm::BasicBlock* dst)
+                                                    const llvm::BasicBlock* dst) const
         {
             const auto& lookup = exec_after_lookup_.at(src);
             if (auto it = lookup.find(dst); it != lookup.end())
@@ -53,9 +57,32 @@ namespace mh
             }
         }
 
+        /**
+         * Lookup execution order between instructions src and dst, if dst could execute after src
+         */
+        ExecAfterCondition LookupExecAfterCondition(const llvm::Instruction* src,
+                                                    const llvm::Instruction* dst) const
+        {
+            const llvm::BasicBlock* bb_src = src->getParent();
+            const llvm::BasicBlock* bb_dst = dst->getParent();
+
+            if (bb_src == bb_dst)
+            {
+                return inst_index_lookup_.at(src) < inst_index_lookup_.at(dst)
+                           ? ExecAfterCondition::Must
+                           : LookupExecAfterCondition(bb_src, bb_dst);
+            }
+            else
+            {
+                return LookupExecAfterCondition(bb_src, bb_dst);
+            }
+        }
+
     private:
         void ComputeBackEdges(const llvm::Function* func);
 
         void ComputeExecAfterLookup(const llvm::Function* func);
+
+        void ComputeInstructionIndexLookup(const llvm::Function* func);
     };
 }; // namespace mh

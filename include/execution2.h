@@ -46,7 +46,7 @@ namespace mh
         {
         }
 
-        // decrepted
+        // deprecated
         void DoAssign(const llvm::Instruction* reg, LocationVar loc);
 
         // %x = alloca/malloc

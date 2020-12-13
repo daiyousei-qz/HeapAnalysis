@@ -11,6 +11,7 @@ namespace mh
     {
         ComputeBackEdges(func);
         ComputeExecAfterLookup(func);
+        ComputeInstructionIndexLookup(func);
     }
 
     void FunctionControlFlowInfo::ComputeBackEdges(const llvm::Function* func)
@@ -97,4 +98,18 @@ namespace mh
 
         this->exec_after_lookup_ = move(result);
     }
+
+    void FunctionControlFlowInfo::ComputeInstructionIndexLookup(const llvm::Function* func)
+    {
+        int counter = 0;
+
+        for (const BasicBlock& bb : *func)
+        {
+            for (const Instruction& inst : bb)
+            {
+                this->inst_index_lookup_[&inst] = counter++;
+            }
+        }
+    }
+
 } // namespace mh

@@ -90,7 +90,17 @@ namespace mh
         // for src_loc in s1 but not in s2
         for (auto& [src_loc, pt_map_1] : s1)
         {
-            if (s2.find(src_loc) == s2.end())
+            if (auto it = s2.find(src_loc); it != s2.end())
+            {
+                for (auto& [target_loc, c1] : pt_map_1)
+                {
+                    if (it->second.find(target_loc) == it->second.end())
+                    {
+                        c1 = c1.Weaken();
+                    }
+                }
+            }
+            else
             {
                 for (auto& [target_loc, c1] : pt_map_1)
                 {
@@ -113,7 +123,7 @@ namespace mh
                     }
                     else
                     {
-                        pt_map_1.insert(std::pair{target_loc, c2.Weaken()});
+                        pt_map_1.insert(pair{target_loc, c2.Weaken()});
                     }
                 }
             }
@@ -122,7 +132,7 @@ namespace mh
                 PointToMap& pt_map_1 = s1[src_loc];
                 for (const auto& [target_loc, c2] : pt_map_2)
                 {
-                    pt_map_1.insert(std::pair{target_loc, c2.Weaken()});
+                    pt_map_1.insert(pair{target_loc, c2.Weaken()});
                 }
             }
         }
@@ -401,9 +411,9 @@ namespace mh
         pt_map_update.clear();
         if (ret_val != nullptr)
         {
-            LocationVar loc_ret_p = LocationVar::FromRegister(ret_val);
+            LocationVar loc_ret = LocationVar::FromRegister(ret_val);
 
-            for (const auto& [loc_pointed_p, pt_constraint] : result_store.at(loc_ret_p))
+            for (const auto& [loc_pointed_p, pt_constraint] : result_store.at(loc_ret))
             {
                 assert(loc_pointed_p.Tag() != LocationTag::Register);
 

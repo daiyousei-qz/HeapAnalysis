@@ -178,88 +178,139 @@ namespace mh
             result[LocationVar::FromRegister(reg)] = std::move(pt_map);
         }
 
+        NormalizeStore(smt_solver_, result);
         return result;
     }
 
     void AnalysisContext::ExportRAWDependency()
     {
+        // collect store and load instructions in the function
         vector<const StoreInst*> stores;
         vector<const LoadInst*> loads;
-        unordered_map<const Instruction*, int> inst_index_lookup;
 
         for (const BasicBlock& bb : *summary_entry_->func)
         {
-            int index = 0;
             for (const Instruction& inst : bb)
             {
                 if (auto store_inst = dyn_cast<StoreInst>(&inst))
                 {
                     stores.push_back(store_inst);
-                    inst_index_lookup[store_inst] = index;
                 }
                 else if (auto load_inst = dyn_cast<LoadInst>(&inst))
                 {
                     loads.push_back(load_inst);
-                    inst_index_lookup[load_inst] = index;
                 }
-
-                index += 1;
             }
         }
 
-        auto test_may_alias = [&](const Value* store_ptr_reg, const Value* load_ptr_reg) {
-            store_ptr_reg = TranslateAliasReg(store_ptr_reg);
-            load_ptr_reg  = TranslateAliasReg(load_ptr_reg);
+        // compute pdge edges with constraints
+        map<pair<const LoadInst*, const StoreInst*>, Constraint> pdg_edges;
+        for (const LoadInst* load_inst : loads)
+        {
+            const PointToMap& load_ptr_pt_map =
+                regfile_.at(TranslateAliasReg(load_inst->getPointerOperand()));
 
-            const PointToMap& store_pt_map = regfile_.at(store_ptr_reg);
-            const PointToMap& load_pt_map  = regfile_.at(load_ptr_reg);
-            for (const auto& [loc, c_store_ptr] : store_pt_map)
+            for (const auto& [loc_load_ptr, c_load_ptr] : load_ptr_pt_map)
             {
-                auto iter = load_pt_map.find(loc);
-                if (iter != load_pt_map.end())
+                // lookup dependencies for the particular ptr location
+                unordered_map<const StoreInst*, Constraint> dependencies;
+
+                for (const StoreInst* store_inst : stores)
                 {
-                    const auto& c_load_ptr = iter->second;
-                    if (smt_solver_.TestSatisfiability(c_store_ptr && c_load_ptr))
+                    if (ctrl_flow_info_.LookupExecAfterCondition(store_inst, load_inst) ==
+                        ExecAfterCondition::Never)
                     {
-                        return true;
+                        // load instruction never executes after this store instruction
+                        // violate control flow
+                        continue;
+                    }
+
+                    const PointToMap& store_ptr_pt_map =
+                        regfile_.at(TranslateAliasReg(store_inst->getPointerOperand()));
+
+                    if (auto it_store_ptr = store_ptr_pt_map.find(loc_load_ptr);
+                        it_store_ptr != store_ptr_pt_map.end())
+                    {
+                        const auto& [loc_store_ptr, c_store_ptr] = *it_store_ptr;
+
+                        // pointer doesn't alias
+                        if (loc_load_ptr != loc_store_ptr &&
+                            !smt_solver_.TestSatisfiability(c_load_ptr && c_store_ptr))
+                        {
+                            continue;
+                        }
+
+                        // indicate if this store would be overwritten by a following store
+                        bool store_overwritten = false;
+                        for (auto it_dep_store = dependencies.begin();
+                             it_dep_store != dependencies.end();)
+                        {
+                            const auto& [dep_store_inst, c_dep_store_ptr] = *it_dep_store;
+
+                            if (ctrl_flow_info_.LookupExecAfterCondition(
+                                    dep_store_inst, store_inst) == ExecAfterCondition::Must &&
+                                smt_solver_.TestImplication(c_store_ptr, c_dep_store_ptr))
+                            {
+                                // this store instruction overwrite dep_store
+                                it_dep_store = dependencies.erase(it_dep_store);
+                                continue;
+                            }
+
+                            if (ctrl_flow_info_.LookupExecAfterCondition(
+                                    store_inst, dep_store_inst) == ExecAfterCondition::Must &&
+                                smt_solver_.TestImplication(c_dep_store_ptr, c_store_ptr))
+                            {
+                                // this store instruction is overwritten by dep_store
+                                store_overwritten = true;
+                                break;
+                            }
+
+                            ++it_dep_store;
+                        }
+
+                        if (!store_overwritten)
+                        {
+                            dependencies.insert_or_assign(store_inst, c_store_ptr);
+                        }
                     }
                 }
+
+                for (const auto& [store_inst, c_store_ptr] : dependencies)
+                {
+                    Constraint& constraint = pdg_edges[pair{load_inst, store_inst}];
+
+                    constraint = constraint || (c_load_ptr && c_store_ptr);
+                }
             }
+        }
 
-            return false;
-        };
-
-        auto store_may_exec_before_load = [&](const StoreInst* store_inst,
-                                              const LoadInst* load_inst) {
-            const BasicBlock* bb_store = store_inst->getParent();
-            const BasicBlock* bb_load  = load_inst->getParent();
-            if (bb_store == bb_load)
+        // test print
+        if (kHeapAnalysisPresentationPrint)
+        {
+            fmt::print("digraph PDG {{\n");
+        }
+        else
+        {
+            fmt::print("[RAW deps]:\n");
+        }
+        for (auto& [loadstore, constraint] : pdg_edges)
+        {
+            constraint.Simplify();
+            if (kHeapAnalysisPresentationPrint)
             {
-                return inst_index_lookup[load_inst] > inst_index_lookup[store_inst];
+                fmt::print("  \"{}\" -> \"{}\"[label=\"{}\"]\n",
+                           *static_cast<const Value*>(loadstore.first),
+                           *static_cast<const Value*>(loadstore.second), constraint);
             }
             else
             {
-                return ctrl_flow_info_.LookupExecAfterCondition(bb_store, bb_load) !=
-                       ExecAfterCondition::Never;
+                fmt::print(" ({} -> {}) ? {}\n", *static_cast<const Value*>(loadstore.first),
+                           *static_cast<const Value*>(loadstore.second), constraint);
             }
-        };
-
-        vector<pair<const StoreInst*, const LoadInst*>> pdg_edges;
-        for (const LoadInst* load_inst : loads)
+        }
+        if (kHeapAnalysisPresentationPrint)
         {
-            for (const StoreInst* store_inst : stores)
-            {
-                if (store_may_exec_before_load(store_inst, load_inst))
-                {
-                    const Value* store_ptr = store_inst->getPointerOperand();
-                    const Value* load_ptr  = load_inst->getPointerOperand();
-
-                    if (store_ptr == load_ptr || test_may_alias(store_ptr, load_ptr))
-                    {
-                        pdg_edges.push_back(pair{store_inst, load_inst});
-                    }
-                }
-            }
+            fmt::print("}}\n");
         }
     }
 
@@ -368,11 +419,13 @@ namespace mh
             root_locs.push_back(LocationVar::FromRegister(input_reg));
         }
 
-        // to print return value
-        if (const Value* ret_val = summary_entry_->return_inst->getReturnValue();
-            ret_val != nullptr)
+        // to print registers in this block
+        for (const Instruction& inst : *bb)
         {
-            root_locs.push_back(LocationVar::FromRegister(ret_val));
+            if (regfile_.find(&inst) != regfile_.end())
+            {
+                root_locs.push_back(LocationVar::FromRegister(&inst));
+            }
         }
 
         const AbstractStore& store = bb != nullptr ? exec_store_cache_.at(bb) : entry_store_;
@@ -417,7 +470,6 @@ namespace mh
 #endif
 
         auto exec = InitializeExecution(bb);
-        // vector<const StoreInst*> stores_so_far;
 
         for (const Instruction& inst : *bb)
         {
@@ -445,25 +497,10 @@ namespace mh
             else if (auto store_inst = dyn_cast<StoreInst>(&inst))
             {
                 exec->DoStore(store_inst->getValueOperand(), store_inst->getPointerOperand());
-
-                // stores_so_far.push_back(store_inst);
             }
             else if (auto load_inst = dyn_cast<LoadInst>(&inst))
             {
                 exec->DoLoad(&inst, load_inst->getPointerOperand());
-
-                // TODO: move PDG out of alias analysis
-                // for (auto store : stores_so_far)
-                // {
-                //     TryAddPdgEdge(*exec, store, load_inst);
-                // }
-                // for (const auto& src_bb : ctx.block_src_map_[block])
-                // {
-                //     for (auto store : ctx.block_store_cache_[src_bb])
-                //     {
-                //         TryAddPdgEdge(*exec, store, load_inst);
-                //     }
-                // }
             }
             else if (auto call_inst = dyn_cast<CallInst>(&inst))
             {
@@ -508,8 +545,14 @@ namespace mh
         AnalysisContext ctx{&env, &summary};
 
         const Function* func = summary.func;
-        unordered_set<const BasicBlock*> workset{&func->front()};
-        deque<const BasicBlock*> worklist{&func->front()};
+        deque<const BasicBlock*> worklist;
+        unordered_set<const BasicBlock*> workset;
+
+        for (const BasicBlock& bb : *func)
+        {
+            worklist.push_back(&bb);
+            workset.insert(&bb);
+        }
 
         while (!worklist.empty())
         {
@@ -531,7 +574,7 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        ctx.DebugPrint(&func->back());
+        ctx.ExportRAWDependency();
 #endif
 
         // TODO: what solver to use?
@@ -548,6 +591,10 @@ namespace mh
         {
             summary.converged = true;
         }
+
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+        mh::DebugPrint(summary);
+#endif
     }
 
     void AnalyzeFunctionRecursive(SummaryEnvironment& env, FunctionSummary& summary,
@@ -606,7 +653,7 @@ namespace mh
     }
 
     // TODO: llvm::Function::doesNotRecurse doesn't return the correct result
-    //  need an analysis to detect recursion
+    //       need an analysis to detect recursion
     void AnalyzeFunction(SummaryEnvironment& env, const Function* func)
     {
         FunctionSummary& summary = env.LookupSummary(func);

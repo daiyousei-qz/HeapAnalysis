@@ -32,6 +32,19 @@ namespace mh
         return TestValidityAux(c.GetMustExpr());
     }
 
+    bool ConstraintSolver::TestImplication(const Constraint& c0, const Constraint& c1)
+    {
+        if (c0.HasSameMayMust() && c1.HasSameMayMust())
+        {
+            return TestImplicationAux(c0.GetMustExpr(), c1.GetMustExpr());
+        }
+        else
+        {
+            return TestImplicationAux(c0.GetMustExpr(), c1.GetMustExpr()) &&
+                   TestImplicationAux(c0.GetMayExpr(), c1.GetMayExpr());
+        }
+    }
+
     bool ConstraintSolver::TestEquivalence(const Constraint& c0, const Constraint& c1)
     {
         if (c0.HasSameMayMust() != c1.HasSameMayMust())

@@ -6,6 +6,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 #include <string>
 #include <stack>
 #include <unordered_set>
@@ -16,42 +17,47 @@ using namespace llvm;
 
 namespace
 {
-    template <typename EF> class ScopeExit
+    class HeapAnalysis : public CallGraphSCCPass
     {
     private:
-        EF exit_;
+        SummaryEnvironment env;
 
-    public:
-        template <typename Fn> ScopeExit(Fn&& f) : exit_(std::forward<Fn>(f)) {}
-        ~ScopeExit() { exit_(); }
-
-        ScopeExit(const ScopeExit&) = delete;
-        ScopeExit& operator=(const ScopeExit&) = delete;
-    };
-
-    template <typename EF> ScopeExit(EF) -> ScopeExit<EF>;
-
-    class HeapAnalysis : public ModulePass
-    {
     public:
         static char ID;
-        HeapAnalysis() : ModulePass(ID) {}
+        HeapAnalysis() : CallGraphSCCPass(ID) {}
 
-        void getAnalysisUsage(AnalysisUsage& AU) const override { AU.setPreservesAll(); }
-
-        bool doInitialization(Module& M) override { return false; }
-
-        bool runOnModule(Module& M) override
+        bool runOnSCC(CallGraphSCC& SCC) override
         {
-            SummaryEnvironment env;
-            for (const Function& func : M)
+            for (const CallGraphNode* node : SCC)
             {
-                if (func.empty())
+                auto func = node->getFunction();
+                if (func == nullptr || func->isDeclaration())
                 {
                     continue;
                 }
 
-                AnalyzeFunction(env, &func);
+                // detect recursion
+                // TODO: use external flag as doesNotRecurse modifies the Function object
+                if (SCC.size() == 1)
+                {
+                    bool recurse = false;
+                    for (auto rec : *node)
+                    {
+                        if (rec.second == node)
+                        {
+                            recurse = true;
+                            break;
+                        }
+                    }
+
+                    if (!recurse)
+                    {
+                        func->setDoesNotRecurse();
+                    }
+                }
+
+                // perform analysis
+                AnalyzeFunction(env, func);
             }
 
             return false;
