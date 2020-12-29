@@ -4,7 +4,7 @@
 #include "location.h"
 #include "summary.h"
 #include "controlflow.h"
-#include "llvm-utils.h"
+#include "utils.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/InstVisitor.h"
@@ -24,14 +24,11 @@ namespace mh
     private:
         const SummaryEnvironment* env_;
 
-        const FunctionSummary* summary_entry_;
+        const FunctionSummary* current_summary_;
 
         ConstraintSolver smt_solver_;
 
         FunctionControlFlowInfo ctrl_flow_info_;
-
-        // a cache of indices to identify different program point
-        std::unordered_map<const llvm::Instruction*, int> call_point_cache_;
 
         // abstract store at the entry point of the function
         AbstractStore entry_store_;
@@ -48,7 +45,7 @@ namespace mh
     public:
         auto Environment() const noexcept { return env_; }
 
-        auto LastSummary() const noexcept { return summary_entry_; }
+        auto CurrentSummary() const noexcept { return current_summary_; }
 
         auto& Solver() noexcept { return smt_solver_; }
 
@@ -83,13 +80,10 @@ namespace mh
             }
         }
 
-        /**
-         * Get a program point identifier to distinguish locations allocated with the same
-         * definition but in different calls
-         */
-        int GetCallPoint(const llvm::Instruction* inst, int prev_call_point)
+        LocationVar RelabelLocation(LocationVar loc, const llvm::Instruction* inst)
         {
-            return env_->ComputeCallPoint(inst, prev_call_point);
+            int call_pt = env_->ComputeCallPoint(inst, loc.CallPoint());
+            return loc.Relabel(call_pt);
         }
 
         /**

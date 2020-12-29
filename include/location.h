@@ -1,5 +1,5 @@
 #pragma once
-#include "fmt-utils.h"
+#include "utils.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Value.h"
@@ -141,27 +141,23 @@ namespace mh
 
     struct CallPointData
     {
+        // remaining budget depth until the location should collapse to a summary location
+        // 0 if the location is already collapsed
+        int depth_to_collapse;
+
+        // definition where this call point spawns
         const llvm::Instruction* inst;
+
+        //
         int prev_call_point;
     };
-
-    inline bool operator==(const CallPointData& lhs, const CallPointData& rhs)
-    {
-        return lhs.inst == rhs.inst && lhs.prev_call_point == rhs.prev_call_point;
-    }
-    inline bool operator!=(const CallPointData& lhs, const CallPointData& rhs)
-    {
-        return !(lhs == rhs);
-    }
 } // namespace mh
 
 template <> struct std::hash<mh::LocationVar>
 {
     size_t operator()(mh::LocationVar x) const noexcept
     {
-        // TODO: use better hash combination algorithm
-        return hash<mh::LocationTag>{}(x.Tag()) ^ hash<int>{}(x.PlaceholderId()) ^
-               hash<const llvm::Value*>{}(x.Definition());
+        return mh::detail::HashCombinePack(0, x.Tag(), x.Definition(), x.PlaceholderId());
     }
 };
 
@@ -254,8 +250,6 @@ template <> struct std::hash<mh::CallPointData>
 {
     size_t operator()(const mh::CallPointData& data) const noexcept
     {
-
-        return std::hash<const llvm::Instruction*>{}(data.inst) * 31 +
-               std::hash<int>{}(data.prev_call_point);
+        return mh::detail::HashCombinePack(0, data.inst, data.prev_call_point);
     }
 };

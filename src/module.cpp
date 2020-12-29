@@ -1,5 +1,5 @@
 #include "analysis.h"
-#include "llvm-utils.h"
+#include "utils.h"
 
 #include "llvm/Pass.h"
 #include "llvm/IR/Function.h"

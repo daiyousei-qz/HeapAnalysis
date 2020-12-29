@@ -11,8 +11,8 @@ namespace mh
     AnalysisContext::AnalysisContext(const SummaryEnvironment* env, const FunctionSummary* summary)
         : smt_solver_(summary->inputs.size()), ctrl_flow_info_(summary->func)
     {
-        this->env_           = env;
-        this->summary_entry_ = summary;
+        this->env_             = env;
+        this->current_summary_ = summary;
 
         // add alias rejection
         const vector<const Value*>& inputs = summary->inputs;
@@ -172,7 +172,7 @@ namespace mh
 
     AbstractStore AnalysisContext::ExportStore()
     {
-        AbstractStore result = std::move(exec_store_cache_.at(&summary_entry_->func->back()));
+        AbstractStore result = std::move(exec_store_cache_.at(&current_summary_->func->back()));
         for (auto& [reg, pt_map] : regfile_)
         {
             result[LocationVar::FromRegister(reg)] = std::move(pt_map);
@@ -188,7 +188,7 @@ namespace mh
         vector<const StoreInst*> stores;
         vector<const LoadInst*> loads;
 
-        for (const BasicBlock& bb : *summary_entry_->func)
+        for (const BasicBlock& bb : *current_summary_->func)
         {
             for (const Instruction& inst : bb)
             {
@@ -414,7 +414,7 @@ namespace mh
         vector<LocationVar> root_locs;
 
         // to print input pointers
-        for (const Value* input_reg : summary_entry_->inputs)
+        for (const Value* input_reg : current_summary_->inputs)
         {
             root_locs.push_back(LocationVar::FromRegister(input_reg));
         }
@@ -429,7 +429,7 @@ namespace mh
         }
 
         const AbstractStore& store = bb != nullptr ? exec_store_cache_.at(bb) : entry_store_;
-        PrintStore(store, root_locs, &regfile_, &summary_entry_->inputs);
+        PrintStore(store, root_locs, &regfile_, &current_summary_->inputs);
     }
 
     void DebugPrint(const AbstractStore& store)
@@ -513,7 +513,7 @@ namespace mh
                 copy(callee_summary.globals.begin(), callee_summary.globals.end(),
                      back_inserter(reg_inputs));
 
-                exec->DoInvoke(&inst, reg_inputs, callee_summary);
+                exec->DoInvoke(&inst, callee_summary, reg_inputs);
             }
             else if (isa<PHINode>(&inst))
             {
@@ -593,7 +593,7 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        mh::DebugPrint(summary);
+        mh::DebugPrint(summary.store);
 #endif
     }
 
@@ -601,16 +601,13 @@ namespace mh
                                   unordered_set<const Function*>& analysis_history,
                                   bool expect_converge)
     {
+        // function already in the call chain, omit analysis and return
         if (analysis_history.find(summary.func) != analysis_history.end())
         {
-            if (summary.store.empty())
-            {
-                // TODO: do some initialization?
-            }
-
             return;
         }
 
+        // collect recursive called functions and analyze non-recursive called functions
         vector<FunctionSummary*> recursive_summaries;
         for (const Function* called_func : summary.called_functions)
         {
@@ -630,25 +627,28 @@ namespace mh
             }
         }
 
+        // add the current function to the call chain
         analysis_history.insert(summary.func);
 
         do
         {
+            // analyze the called functions
             bool dep_converged = true;
             for (FunctionSummary* called_summmary : recursive_summaries)
             {
                 if (!called_summmary->converged)
                 {
-                    AnalyzeFunctionRecursive(env, *called_summmary, analysis_history,
-                                             summary.func->doesNotRecurse());
+                    AnalyzeFunctionRecursive(env, *called_summmary, analysis_history, false);
                 }
 
                 dep_converged = dep_converged && called_summmary->converged;
             }
 
+            // analyze the current function
             AnalyzeFunctionAux(env, summary, dep_converged);
         } while (expect_converge && !summary.converged);
 
+        // remove the current function from the call chain
         analysis_history.erase(summary.func);
     }
 

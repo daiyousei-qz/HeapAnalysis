@@ -30,19 +30,37 @@ namespace mh
     {
         assert(inst != nullptr && prev_call_point >= 0);
 
-        if (auto it = call_point_lookup.find(CallPointData{inst, prev_call_point});
+        if (auto it = call_point_lookup.find({inst, prev_call_point});
             it != call_point_lookup.end())
         {
             return it->second;
         }
-        else
-        {
-            int result = call_point_cache.size() + 1;
-            call_point_cache.push_back(CallPointData{inst, prev_call_point});
-            call_point_lookup[CallPointData{inst, prev_call_point}] = result;
 
-            return result;
+        int depth_to_collapse =
+            prev_call_point == 0 ? 8 : call_point_cache[prev_call_point - 1].depth_to_collapse - 1;
+
+        if (depth_to_collapse < 0)
+        {
+            // max depth or already collapsed, collapse
+            return prev_call_point;
         }
+
+        for (int id = prev_call_point; id > 0; id = call_point_cache[id - 1].prev_call_point)
+        {
+            if (call_point_cache[id - 1].inst == inst)
+            {
+                // repeat in call instructiton, collapse
+                call_point_cache[prev_call_point - 1].depth_to_collapse = 0;
+                return prev_call_point;
+            }
+        }
+
+        // allocate a new call point
+        int result = call_point_cache.size() + 1;
+        call_point_cache.push_back(CallPointData{depth_to_collapse, inst, prev_call_point});
+        call_point_lookup[{inst, prev_call_point}] = result;
+
+        return result;
     }
 
     void SummaryEnvironment::InitializeSummary(FunctionSummary& summary, const llvm::Function* func)

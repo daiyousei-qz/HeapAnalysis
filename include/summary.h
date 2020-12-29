@@ -3,7 +3,7 @@
 #include "constraint.h"
 #include "execution.h"
 #include "location.h"
-#include "llvm-utils.h"
+#include "utils.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/InstVisitor.h"
@@ -49,7 +49,7 @@ namespace mh
         std::unordered_map<const llvm::Function*, std::unique_ptr<FunctionSummary>> analysis_memory;
 
         mutable std::vector<CallPointData> call_point_cache;
-        mutable std::unordered_map<CallPointData, int> call_point_lookup;
+        mutable std::unordered_map<std::pair<const llvm::Instruction*, int>, int> call_point_lookup;
 
     public:
         SummaryEnvironment() = default;
