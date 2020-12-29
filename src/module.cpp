@@ -1,84 +1,69 @@
-// #include "analysis.h"
-// #include "llvm-utils.h"
+#include "analysis.h"
+#include "llvm-utils.h"
 
-// #include "llvm/Pass.h"
-// #include "llvm/IR/Function.h"
-// #include "llvm/IR/Module.h"
-// #include "llvm/Analysis/CFG.h"
-// #include <string>
-// #include <stack>
-// #include <unordered_set>
+#include "llvm/Pass.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
+#include <string>
+#include <stack>
+#include <unordered_set>
 
-// using namespace std;
-// using namespace llvm;
+using namespace mh;
+using namespace std;
+using namespace llvm;
 
-// namespace
-// {
-//     template <typename EF> class ScopeExit
-//     {
-//     private:
-//         EF exit_;
+namespace
+{
+    class HeapAnalysis : public CallGraphSCCPass
+    {
+    private:
+        SummaryEnvironment env;
 
-//     public:
-//         template <typename Fn> ScopeExit(Fn&& f) : exit_(std::forward<Fn>(f)) {}
-//         ~ScopeExit() { exit_(); }
+    public:
+        static char ID;
+        HeapAnalysis() : CallGraphSCCPass(ID) {}
 
-//         ScopeExit(const ScopeExit&) = delete;
-//         ScopeExit& operator=(const ScopeExit&) = delete;
-//     };
+        bool runOnSCC(CallGraphSCC& SCC) override
+        {
+            for (const CallGraphNode* node : SCC)
+            {
+                auto func = node->getFunction();
+                if (func == nullptr || func->isDeclaration())
+                {
+                    continue;
+                }
 
-//     template <typename EF> ScopeExit(EF) -> ScopeExit<EF>;
+                // detect recursion
+                // TODO: use external flag as doesNotRecurse modifies the Function object
+                if (SCC.size() == 1)
+                {
+                    bool recurse = false;
+                    for (auto rec : *node)
+                    {
+                        if (rec.second == node)
+                        {
+                            recurse = true;
+                            break;
+                        }
+                    }
 
-//     class HeapAnalysis : public ModulePass
-//     {
-//     public:
-//         static char ID;
-//         HeapAnalysis() : ModulePass(ID) {}
+                    if (!recurse)
+                    {
+                        func->setDoesNotRecurse();
+                    }
+                }
 
-//         void getAnalysisUsage(AnalysisUsage& AU) const override { AU.setPreservesAll(); }
+                // perform analysis
+                AnalyzeFunction(env, func);
+            }
 
-//         bool doInitialization(Module& M) override { return false; }
+            return false;
+        }
+    };
+} // namespace
 
-//         bool runOnModule(Module& M) override
-//         {
-//             SummaryEnvironment env;
-//             std::unordered_set<const Function*> call_history;
-//             for (const Function& func : M)
-//             {
-//                 ProcessFunctionAnalysis(env, call_history, &func);
-//             }
-
-//             return false;
-//         }
-
-//     private:
-//         // TODO: support recursive function
-//         void ProcessFunctionAnalysis(SummaryEnvironment& env,
-//                                      std::unordered_set<const llvm::Function*>& call_history,
-//                                      const Function* func)
-//         {
-//             if (func->empty() || env.IsAnalyzed(func))
-//             {
-//                 return;
-//             }
-
-//             call_history.insert(func);
-//             ScopeExit pop_func_([&] { call_history.erase(func); });
-
-//             std::vector<const Function*> called_funcs = CollectCalledFunction(func);
-
-//             for (const Function* callee : called_funcs)
-//             {
-//                 if (!env.IsAnalyzed(callee))
-//                 {
-//                     ProcessFunctionAnalysis(env, call_history, callee);
-//                 }
-//             }
-
-//             env.RegisterSummary(func, AnalyzeFunction(env, call_history, func));
-//         }
-//     };
-// } // namespace
-
-// char HeapAnalysis::ID = 0;
-// static RegisterPass<HeapAnalysis> X("heap-analysis", "point-to analysis", false, true);
+char HeapAnalysis::ID = 0;
+static RegisterPass<HeapAnalysis> X("heap-analysis", "point-to analysis", false, true);

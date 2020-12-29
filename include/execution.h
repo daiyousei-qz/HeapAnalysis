@@ -1,86 +1,70 @@
 #pragma once
-#include "location.h"
+#include "llvm/IR/Instruction.h"
 #include "constraint.h"
+#include "location.h"
 
-struct FunctionSummary;
-class AnalysisContext;
-
-using PointToMap    = std::unordered_map<LocationVar, Constraint>;
-using AbstractStore = std::unordered_map<LocationVar, PointToMap>;
-
-void AddPointToEdge(PointToMap& edges, LocationVar loc, Constraint c);
-
-// compare
-// both stores are assumed to be normalized
-// i.e. every constrainted edge is satisfiable
-bool EqualAbstractStore(ConstraintSolver& smt_engine, const AbstractStore& s1,
-                        const AbstractStore& s2);
-
-// merge point-to graphs into s1
-void MergeAbstractStore(AbstractStore& s1, const AbstractStore& s2);
-
-/**
- * An `AbstractExecution` is where analysis states are stored and static
- * interpretations are performed
- */
-class AbstractExecution
+namespace mh
 {
-public:
-    AbstractExecution(AnalysisContext* ctx, AbstractStore store)
-        : ctx_(ctx), alias_map_(), store_(store)
+    struct FunctionSummary;
+    class AnalysisContext;
+
+    // { point-to edge = (target-loc, constraint) }
+    using PointToMap = std::unordered_map<LocationVar, Constraint>;
+
+    // loc -> {point-to edge}
+    using AbstractStore = std::unordered_map<LocationVar, PointToMap>;
+
+    // add a new point-to edge into a PointToMap, if target location already exist, constraint
+    // will be merged with disjunction
+    void AddPointToEdge(PointToMap& edges, const LocationVar& loc, const Constraint& c);
+
+    // simpilify constraint terms and erase unsatisfiable point-to edges from the store
+    void NormalizeStore(ConstraintSolver& solver, AbstractStore& store);
+
+    // assuming all constraints in PointToMap are satisfiable
+    // compare if s1 === s2
+    // 1. same topology
+    // 2. all constraints are equivalent
+    bool EqualAbstractStore(ConstraintSolver& solver, const AbstractStore& s1,
+                            const AbstractStore& s2);
+
+    // merge s2 into s1
+    void MergeAbstractStore(AbstractStore& s1, const AbstractStore& s2);
+
+    class AbstractExecution
     {
-    }
+    private:
+        AnalysisContext* ctx_;
 
-    const AnalysisContext& GetContext() const noexcept { return *ctx_; }
+        AbstractStore store_;
 
-    const auto& GetAliasMap() const noexcept { return alias_map_; }
+        friend class AnalysisContext;
 
-    const auto& GetStore() const noexcept { return store_; }
-
-    void MergeWith(const AbstractExecution& other)
-    {
-        // merge alias map
-        // TODO: this could be generated ahead of analysis to avoid redundent
-        // computation
-        for (const auto& [loc, canonical_loc] : other.alias_map_)
+    public:
+        AbstractExecution(AnalysisContext* ctx, AbstractStore init_store)
+            : ctx_(ctx), store_(std::move(init_store))
         {
-            alias_map_.insert_or_assign(loc, canonical_loc);
         }
 
-        // merge abstract store
-        MergeAbstractStore(store_, other.store_);
-    }
+        // deprecated
+        void DoAssign(const llvm::Instruction* reg, LocationVar loc);
 
-    // remove point-to edges with unsatisfiable constraint
-    void NormalizeStore();
+        // %x = alloca/malloc
+        void DoAlloc(const llvm::Instruction* reg, bool heap_alloc);
 
-    // let alias_ptr ~= ptr
-    void AliasRegister(const llvm::Value* reg, const llvm::Value* alias_target);
+        // %x = phi(v1, v2)
+        void DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,
+                         const llvm::Value* val2);
 
-    // unroll alias
-    const llvm::Value* GetCanonicalRegister(const llvm::Value* reg) const;
+        // %x = f(?)
+        void DoInvoke(const llvm::Instruction* reg, const std::vector<const llvm::Value*>& inputs,
+                      const FunctionSummary& summary);
 
-    // x = alloc(?)
-    void AssignRegister(const llvm::Value* reg, LocationVar val);
+        // %x = *p
+        void DoLoad(const llvm::Instruction* reg, const llvm::Value* reg_ptr);
 
-    // x = f(...)
-    void Invoke(const llvm::Value* reg_assign, const std::vector<const llvm::Value*>& reg_args,
-                const FunctionSummary& summary, int call_point);
+        // *p = %?
+        void DoStore(const llvm::Value* reg_val, const llvm::Value* reg_ptr);
+    };
 
-    // x = *p
-    void ReadStore(const llvm::Value* reg, const llvm::Value* reg_ptr);
-
-    // *p = x
-    void WriteStore(const llvm::Value* reg_val, const llvm::Value* reg_ptr);
-
-    bool TestMayAlias(const llvm::Value* store_ptr_reg, const llvm::Value* load_ptr_reg);
-
-private:
-    PointToMap& LookupRegister(const llvm::Value* reg);
-
-    // TODO: set nullptr for execution in summary
-    AnalysisContext* ctx_;
-
-    std::unordered_map<const llvm::Value*, const llvm::Value*> alias_map_;
-    AbstractStore store_;
-};
+} // namespace mh

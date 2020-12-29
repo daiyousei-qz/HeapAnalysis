@@ -1,8 +1,8 @@
 #pragma once
 
-#include "constraint2.h"
-#include "execution2.h"
-#include "location2.h"
+#include "constraint.h"
+#include "execution.h"
+#include "location.h"
 #include "llvm-utils.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instruction.h"
