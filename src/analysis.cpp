@@ -478,11 +478,11 @@ namespace mh
 #endif
             if (isa<AllocaInst>(inst))
             {
-                exec->DoAlloc(&inst, false);
+                exec->DoAlloc(&inst);
             }
             else if (IsMallocCall(&inst))
             {
-                exec->DoAlloc(&inst, true);
+                exec->DoAlloc(&inst);
             }
             else if (isa<BitCastInst>(&inst))
             {

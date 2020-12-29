@@ -28,7 +28,7 @@ namespace mh
         void DoAssign(const llvm::Instruction* reg, LocationVar loc);
 
         // %x = alloca/malloc
-        void DoAlloc(const llvm::Instruction* reg, bool heap_alloc);
+        void DoAlloc(const llvm::Instruction* reg);
 
         // %x = phi(v1, v2)
         void DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,

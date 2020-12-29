@@ -12,10 +12,9 @@ namespace mh
         ctx_->LookupRegFile(reg) = PointToMap{{loc, Constraint{true}}};
     }
 
-    void AbstractExecution::DoAlloc(const llvm::Instruction* reg, bool heap_alloc)
+    void AbstractExecution::DoAlloc(const llvm::Instruction* reg)
     {
-        LocationVar loc =
-            heap_alloc ? LocationVar::FromHeapAlloc(reg) : LocationVar::FromStackAlloc(reg);
+        LocationVar loc          = LocationVar::FromAllocation(reg);
         ctx_->LookupRegFile(reg) = PointToMap{{loc, Constraint{true}}};
 
         // assign null on allocation
@@ -248,7 +247,7 @@ namespace mh
                     }
                     else
                     {
-                        // having tag Value/StackAlloc/HeapAlloc
+                        // having tag Alloc/Value
                         // actual location defined in callee's context
                         LocationVar new_loc = ctx_->RelabelLocation(loc_pointed_p, reg);
                         if (loc_pointed_p.CallPoint() != new_loc.CallPoint())
@@ -311,7 +310,7 @@ namespace mh
                 }
                 else
                 {
-                    // having tag Value/StackAlloc/HeapAlloc
+                    // having tag Alloc/Value
                     // actual location defined in callee's context
                     LocationVar new_loc = ctx_->RelabelLocation(loc_pointed_p, reg);
                     if (loc_pointed_p.CallPoint() != new_loc.CallPoint())

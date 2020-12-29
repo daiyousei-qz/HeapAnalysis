@@ -9,20 +9,19 @@ namespace mh
     // Tag for an abstract memory location to differentiate sources of allocation
     enum class LocationTag
     {
+        // locations that have dynamic definition
+        // .i.e locations passed in by parameters
+        Dynamic,
+
         // an LLVM instruction value
         // intermediate locations for analysis and independent from the program
         // state
         Register,
 
-        // locations that have dynamic definition
-        // .i.e locations passed in by parameters
-        Dynamic,
-
         // locations that have deterministic definition
         // i.e. locations allocated inside the function
+        Alloc,
         Value,
-        StackAlloc,
-        HeapAlloc,
     };
 
     class LocationVar
@@ -35,7 +34,7 @@ namespace mh
             // valid when tag is Dynamic
             int deref_level_;
 
-            // valid when tag is any of {Value, StackAlloc, HeapAlloc}
+            // valid when tag is any of {Alloc, Value}
             int call_point_;
 
             // dummy slot for intialization
@@ -67,21 +66,19 @@ namespace mh
             return deref_level_;
         }
 
-        // valid when tag in {Value, StackAlloc, HeapAlloc}
+        // valid when tag in {Alloc, Value}
         // as an identifier for different locations of the same definition in caller's context
         // should always be 0 in the context of definition
         int CallPoint() const noexcept
         {
-            assert(tag_ == LocationTag::Value || tag_ == LocationTag::StackAlloc ||
-                   tag_ == LocationTag::HeapAlloc);
+            assert(tag_ == LocationTag::Alloc || tag_ == LocationTag::Value);
             return call_point_;
         }
 
         LocationVar Relabel(int call_point) const noexcept
         {
             // TODO: should we differentiate locations tagged with LocationTag::Value?
-            assert(tag_ == LocationTag::Value || tag_ == LocationTag::StackAlloc ||
-                   tag_ == LocationTag::HeapAlloc);
+            assert(tag_ == LocationTag::Alloc || tag_ == LocationTag::Value);
             return LocationVar{tag_, definition_, call_point};
         }
 
@@ -113,14 +110,9 @@ namespace mh
             return LocationVar{LocationTag::Dynamic, reg, deref_level};
         }
 
-        static LocationVar FromStackAlloc(const llvm::Value* reg_definition)
+        static LocationVar FromAllocation(const llvm::Value* reg_definition)
         {
-            return LocationVar{LocationTag::StackAlloc, reg_definition, 0};
-        }
-
-        static LocationVar FromHeapAlloc(const llvm::Value* reg_definition)
-        {
-            return LocationVar{LocationTag::HeapAlloc, reg_definition, 0};
+            return LocationVar{LocationTag::Alloc, reg_definition, 0};
         }
 
         static LocationVar FromProgramValue(const llvm::Value* reg_definition)
@@ -175,14 +167,11 @@ template <> struct fmt::formatter<mh::LocationTag> : formatter<std::string_view>
         case mh::LocationTag::Dynamic:
             name = "Dynamic";
             break;
+        case mh::LocationTag::Alloc:
+            name = "Alloc";
+            break;
         case mh::LocationTag::Value:
             name = "Value";
-            break;
-        case mh::LocationTag::StackAlloc:
-            name = "StackAlloc";
-            break;
-        case mh::LocationTag::HeapAlloc:
-            name = "HeapAlloc";
             break;
         }
         return formatter<std::string_view>::format(name, ctx);
@@ -198,7 +187,7 @@ template <> struct fmt::formatter<mh::LocationVar> : fmt::formatter<std::string_
         switch (c.Tag())
         {
         case mh::LocationTag::Value:
-        case mh::LocationTag::StackAlloc:
+        case mh::LocationTag::Alloc:
         case mh::LocationTag::HeapAlloc:
             if (c.Definition() == nullptr)
             {
