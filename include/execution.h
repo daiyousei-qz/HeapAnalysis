@@ -25,7 +25,7 @@ namespace mh
         }
 
         // deprecated
-        void DoAssign(const llvm::Instruction* reg, LocationVar loc);
+        void DoAssign(const llvm::Instruction* reg, AbstractLocation loc);
 
         // %x = alloca/malloc
         void DoAlloc(const llvm::Instruction* reg);
@@ -50,8 +50,8 @@ namespace mh
 
         struct ArgParamMappingLookup
         {
-            std::unordered_map<LocationVar, PointToMap> pa;
-            std::unordered_map<LocationVar, PointToMap> ap;
+            std::unordered_map<AbstractLocation, PointToMap> pa;
+            std::unordered_map<AbstractLocation, PointToMap> ap;
         };
 
         ArgParamMappingLookup

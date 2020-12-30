@@ -5,14 +5,14 @@
 namespace mh
 {
     // { point-to edge = (target-loc, constraint) }
-    using PointToMap = std::unordered_map<LocationVar, Constraint>;
+    using PointToMap = std::unordered_map<AbstractLocation, Constraint>;
 
     // loc -> {point-to edge}
-    using AbstractStore = std::unordered_map<LocationVar, PointToMap>;
+    using AbstractStore = std::unordered_map<AbstractLocation, PointToMap>;
 
     // add a new point-to edge into a PointToMap, if target location already exist, constraint
     // will be merged with disjunction
-    void AddPointToEdge(PointToMap& edges, const LocationVar& loc, const Constraint& c);
+    void AddPointToEdge(PointToMap& edges, const AbstractLocation& loc, const Constraint& c);
 
     // simpilify constraint terms and erase unsatisfiable point-to edges from the store
     void NormalizeStore(ConstraintSolver& solver, AbstractStore& store);

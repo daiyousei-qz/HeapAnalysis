@@ -1,5 +1,6 @@
 #pragma once
 #include "llvm/IR/InstVisitor.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
 #include <vector>
 
 using OpRange      = llvm::User::op_range;
@@ -21,7 +22,8 @@ inline bool IsMallocCall(const llvm::Value* val)
 {
     if (auto inst = llvm::dyn_cast<llvm::CallInst>(val))
     {
-        if (inst->getCalledFunction()->getName() == "malloc")
+        const llvm::Function* called_func = inst->getCalledFunction();
+        if (called_func != nullptr && called_func->getName() == "malloc")
         {
             return true;
         }

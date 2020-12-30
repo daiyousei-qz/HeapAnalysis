@@ -58,19 +58,19 @@ namespace mh
         // initialize entry store for analysis
         for (int i = 0; i < inputs.size(); ++i)
         {
-            const llvm::Value* arg_i = inputs[i];
-            int ptr_level_i          = ptr_nest_levels[i];
-            const LocationVar loc_i  = LocationVar::FromRegister(arg_i);
+            const llvm::Value* arg_i     = inputs[i];
+            int ptr_level_i              = ptr_nest_levels[i];
+            const AbstractLocation loc_i = AbstractLocation::FromRegister(arg_i);
 
             // add edges when there's strictly no aliasing, i.e. vi -> *vi -> **vi
-            LocationVar loc         = loc_i;
-            LocationVar loc_pointed = LocationVar::FromRuntimeMemory(arg_i, 0);
-            entry_store_[loc]       = {{loc_pointed, smt_solver_.MakeAliasConstraint(i, i)}};
+            AbstractLocation loc         = loc_i;
+            AbstractLocation loc_pointed = AbstractLocation::FromRuntimeMemory(arg_i, 0);
+            entry_store_[loc]            = {{loc_pointed, smt_solver_.MakeAliasConstraint(i, i)}};
 
             for (int k = 0; k < ptr_level_i; ++k)
             {
                 loc               = loc_pointed;
-                loc_pointed       = LocationVar::FromRuntimeMemory(arg_i, k + 1);
+                loc_pointed       = AbstractLocation::FromRuntimeMemory(arg_i, k + 1);
                 entry_store_[loc] = {{loc_pointed, Constraint{true}}};
             }
 
@@ -79,7 +79,7 @@ namespace mh
             {
                 if (smt_solver_.TestAlias(i, j))
                 {
-                    LocationVar loc_alias = LocationVar::FromRuntimeMemory(inputs[j], 0);
+                    AbstractLocation loc_alias = AbstractLocation::FromRuntimeMemory(inputs[j], 0);
                     entry_store_[loc_i].insert(
                         pair{loc_alias, smt_solver_.MakeAliasConstraint(i, j)});
                 }
@@ -175,7 +175,7 @@ namespace mh
         AbstractStore result = std::move(exec_store_cache_.at(&current_summary_->func->back()));
         for (auto& [reg, pt_map] : regfile_)
         {
-            result[LocationVar::FromRegister(reg)] = std::move(pt_map);
+            result[AbstractLocation::FromRegister(reg)] = std::move(pt_map);
         }
 
         NormalizeStore(smt_solver_, result);
@@ -314,13 +314,13 @@ namespace mh
         }
     }
 
-    void PrintStore(const AbstractStore& store, const vector<LocationVar>& root_locs,
+    void PrintStore(const AbstractStore& store, const vector<AbstractLocation>& root_locs,
                     const AbstractRegFile* regfile           = nullptr,
                     const vector<const llvm::Value*>* inputs = nullptr,
                     bool output_graphviz                     = kHeapAnalysisPresentationPrint)
     {
-        unordered_set<LocationVar> known_locs;
-        deque<LocationVar> important_locs;
+        unordered_set<AbstractLocation> known_locs;
+        deque<AbstractLocation> important_locs;
 
         for (const auto& loc : root_locs)
         {
@@ -329,7 +329,7 @@ namespace mh
         }
 
         fmt::print("[Abstract Store]\n");
-        auto lookup_store = [&](LocationVar loc) -> const PointToMap& {
+        auto lookup_store = [&](AbstractLocation loc) -> const PointToMap& {
             if (loc.Tag() == LocationTag::Register && regfile != nullptr)
             {
                 return regfile->at(loc.Definition());
@@ -356,7 +356,7 @@ namespace mh
                 for (int i = 0; i < inputs->size(); ++i)
                 {
                     fmt::print("  \"x{}: {}\" [shape=box]\n", i,
-                               LocationVar::FromRegister((*inputs)[i]));
+                               AbstractLocation::FromRegister((*inputs)[i]));
                 }
             }
         }
@@ -411,12 +411,12 @@ namespace mh
 
     void AnalysisContext::DebugPrint(const BasicBlock* bb)
     {
-        vector<LocationVar> root_locs;
+        vector<AbstractLocation> root_locs;
 
         // to print input pointers
         for (const Value* input_reg : current_summary_->inputs)
         {
-            root_locs.push_back(LocationVar::FromRegister(input_reg));
+            root_locs.push_back(AbstractLocation::FromRegister(input_reg));
         }
 
         // to print registers in this block
@@ -424,7 +424,7 @@ namespace mh
         {
             if (regfile_.find(&inst) != regfile_.end())
             {
-                root_locs.push_back(LocationVar::FromRegister(&inst));
+                root_locs.push_back(AbstractLocation::FromRegister(&inst));
             }
         }
 
@@ -434,7 +434,7 @@ namespace mh
 
     void DebugPrint(const AbstractStore& store)
     {
-        vector<LocationVar> root_locs;
+        vector<AbstractLocation> root_locs;
 
         for (const auto& [loc, pt_map] : store)
         {
@@ -446,18 +446,18 @@ namespace mh
 
     void DebugPrint(const FunctionSummary& summary)
     {
-        vector<LocationVar> root_locs;
+        vector<AbstractLocation> root_locs;
 
         // to print input pointers
         for (const Value* input_reg : summary.inputs)
         {
-            root_locs.push_back(LocationVar::FromRegister(input_reg));
+            root_locs.push_back(AbstractLocation::FromRegister(input_reg));
         }
 
         // to print return value
         if (const Value* ret_val = summary.return_inst->getReturnValue(); ret_val != nullptr)
         {
-            root_locs.push_back(LocationVar::FromRegister(ret_val));
+            root_locs.push_back(AbstractLocation::FromRegister(ret_val));
         }
 
         PrintStore(summary.store, root_locs, nullptr, &summary.inputs);
@@ -521,7 +521,7 @@ namespace mh
             }
             else
             {
-                exec->DoAssign(&inst, LocationVar::FromProgramValue(&inst));
+                exec->DoAssign(&inst, AbstractLocation::FromProgramValue(&inst));
             }
         }
 
@@ -593,7 +593,7 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        mh::DebugPrint(summary.store);
+        mh::DebugPrint(summary);
 #endif
     }
 

@@ -58,7 +58,7 @@ namespace mh
 
             if (pt_map.empty() && llvm::isa<llvm::Constant>(reg))
             {
-                pt_map.insert(std::pair{LocationVar::FromProgramValue(reg), Constraint{true}});
+                pt_map.insert(std::pair{AbstractLocation::FromProgramValue(reg), Constraint{true}});
             }
 
             return pt_map;
@@ -80,7 +80,7 @@ namespace mh
             }
         }
 
-        LocationVar RelabelLocation(LocationVar loc, const llvm::Instruction* inst)
+        AbstractLocation RelabelLocation(AbstractLocation loc, const llvm::Instruction* inst)
         {
             int call_pt = env_->ComputeCallPoint(inst, loc.CallPoint());
             return loc.Relabel(call_pt);

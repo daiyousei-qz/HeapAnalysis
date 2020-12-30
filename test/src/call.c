@@ -23,9 +23,4 @@ int* alloc_int(int value)
     *p     = value;
     return p;
 }
-int add_alloc(int** p, int** q)
-{
-    *p = alloc_int(1);
-    *q = alloc_int(41);
-    return **p + **q;
-}
+int* do_alloc_int_42() { return alloc_int(42); }

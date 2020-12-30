@@ -6,7 +6,7 @@ using namespace llvm;
 
 namespace mh
 {
-    void AddPointToEdge(PointToMap& edges, const LocationVar& loc, const Constraint& c)
+    void AddPointToEdge(PointToMap& edges, const AbstractLocation& loc, const Constraint& c)
     {
         auto it = edges.find(loc);
         if (it == edges.end())
