@@ -98,15 +98,7 @@ namespace mh
         fmt::print("[Constraint mapping]\n");
         for (int i = 0; i < zsrc.size(); ++i)
         {
-            if (zdst_may == zdst_must)
-            {
-                fmt::print("{} <-> {{{}}}\n", zsrc[i].to_string(), zdst_must[i].to_string());
-            }
-            else
-            {
-                fmt::print("{}: {{{}, {}}}\n", zsrc[i].to_string(), zdst_may[i].to_string(),
-                           zdst_must[i].to_string());
-            }
+            fmt::print("{} <-> {}\n", zsrc[i].to_string(), Constraint{zdst_may[i], zdst_must[i]});
         }
 #endif
 
@@ -124,16 +116,9 @@ namespace mh
             new_pt_map.reserve(pt_map.size());
             for (const auto& [loc_target, constraint] : pt_map)
             {
-                if (constraint.IsTopLiteral() || constraint.IsBottomLiteral())
-                {
-                    new_pt_map[loc_target] = constraint;
-                }
-                else
-                {
-                    z3::expr new_may       = constraint.GetMayExpr().substitute(zsrc, zdst_may);
-                    z3::expr new_must      = constraint.GetMayExpr().substitute(zsrc, zdst_must);
-                    new_pt_map[loc_target] = Constraint{new_may, new_must};
-                }
+                z3::expr new_may       = constraint.GetMayExpr().substitute(zsrc, zdst_may);
+                z3::expr new_must      = constraint.GetMustExpr().substitute(zsrc, zdst_must);
+                new_pt_map[loc_target] = Constraint{new_may, new_must};
             }
         }
 
@@ -206,11 +191,12 @@ namespace mh
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         fmt::print("[Location mapping]\n");
-        for (const auto& [loc_p, eq_map] : loc_mapping_pa)
+        for (auto& [loc_p, eq_map] : loc_mapping_pa)
         {
             fmt::print("| {}\n", loc_p);
-            for (const auto& [loc_a, eq_constraint] : eq_map)
+            for (auto& [loc_a, eq_constraint] : eq_map)
             {
+                eq_constraint.Simplify();
                 fmt::print("  => {} ? {}\n", loc_a, eq_constraint);
             }
         }
@@ -309,11 +295,14 @@ namespace mh
             }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-            fmt::print("rewriting ptmap of {}\n", loc_a);
-            for (auto& [loc_target, constraint] : new_pt_map)
+            if (!new_pt_map.empty())
             {
-                constraint.Simplify();
-                fmt::print("  -> {} ? {}\n", loc_target, constraint);
+                fmt::print("rewriting ptmap of {}\n", loc_a);
+                for (auto& [loc_target, constraint] : new_pt_map)
+                {
+                    constraint.Simplify();
+                    fmt::print("  -> {} ? {}\n", loc_target, constraint);
+                }
             }
 #endif
 
@@ -349,6 +338,9 @@ namespace mh
         }
     }
 
+    // TODO: remove this
+    void DebugPrint(const AbstractStore& store);
+
     // TODO: copy some value location into caller's context as well
     void AbstractExecution::DoInvoke(const llvm::Instruction* reg,
                                      const FunctionSummary& called_summary,
@@ -360,6 +352,12 @@ namespace mh
         // say in invocation f(a1, a2, ...), constraint variables are x1, x2, ...
         // term alias(xi, xj) should be translated into alias(ai, aj)
         AbstractStore result_store = ExtractStoreToCurrentContext(called_summary, inputs);
+
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+        NormalizeStore(ctx_->Solver(), result_store);
+        fmt::print("Instantiation:");
+        DebugPrint(result_store);
+#endif
 
         // step 2: compute mappings of location variables
         //

@@ -194,16 +194,19 @@ template <> struct fmt::formatter<mh::AbstractLocation> : fmt::formatter<std::st
             {
                 return fmt::format_to(ctx.out(), "{}@{}", *c.Definition(), c.CallPoint());
             }
-
         default:
         {
             auto output_iter = ctx.out();
             if (c.Tag() == mh::LocationTag::Dynamic)
             {
-                for (int i = 0; i <= c.DerefLevel(); ++i)
+                for (int i = 0; i < c.DerefLevel(); ++i)
                 {
                     output_iter = fmt::format_to(output_iter, "*");
                 }
+            }
+            else if (c.Tag() == mh::LocationTag::Register && !c.Definition()->getName().empty())
+            {
+                output_iter = fmt::format_to(output_iter, "%");
             }
 
             if (!c.Definition()->getName().empty())

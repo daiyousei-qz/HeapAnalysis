@@ -39,8 +39,7 @@ namespace mh
                     fmt::print("[analysis] rejecting alias({}, {}), reason: non-ptr type\n", i, j);
 #endif
                 }
-
-                if (ptr_nest_levels[i] != ptr_nest_levels[j])
+                else if (ptr_nest_levels[i] != ptr_nest_levels[j])
                 {
                     // TODO: exclude opaque pointer, i.e. void*
                     // TODO: add toggles for relaxed aliasing rules
@@ -50,6 +49,16 @@ namespace mh
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
                     fmt::print("[analysis] rejecting alias({}, {}), reason: different ptr level\n",
                                i, j);
+#endif
+                }
+                else if (isa<GlobalVariable>(arg_i) && isa<GlobalVariable>(arg_j))
+                {
+                    smt_solver_.RejectAlias(i, j);
+
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+                    fmt::print(
+                        "[analysis] rejecting alias({}, {}), reason: different global variable\n",
+                        i, j);
 #endif
                 }
             }
@@ -474,7 +483,7 @@ namespace mh
         for (const Instruction& inst : *bb)
         {
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-            fmt::print("interpreting {}...\n", static_cast<const Value&>(inst));
+            // fmt::print("interpreting {}...\n", static_cast<const Value&>(inst));
 #endif
             if (isa<AllocaInst>(inst))
             {
