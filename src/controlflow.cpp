@@ -1,4 +1,5 @@
 #include "controlflow.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Analysis/CFG.h"
 #include <deque>
 

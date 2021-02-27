@@ -3,6 +3,7 @@
 #include "constraint.h"
 #include "location.h"
 #include "store.h"
+#include <unordered_set>
 
 namespace mh
 {
@@ -15,6 +16,12 @@ namespace mh
         AnalysisContext* ctx_;
 
         AbstractStore store_;
+
+        // track if any register is updated in this execution
+        bool reg_update_ = false;
+
+        // track locations point-to map of which may be altered in this execution
+        std::unordered_set<AbstractLocation> important_loc_;
 
         friend class AnalysisContext;
 
@@ -34,6 +41,9 @@ namespace mh
         void DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,
                          const llvm::Value* val2);
 
+        // %x = phi(v1, v2, ...)
+        void DoAssignPhi(const llvm::Instruction* reg, const llvm::User::const_op_range vals);
+
         // %x = f(?)
         void DoInvoke(const llvm::Instruction* reg, const FunctionSummary& called_summary,
                       const std::vector<const llvm::Value*>& inputs);
@@ -44,7 +54,13 @@ namespace mh
         // *p = %?
         void DoStore(const llvm::Value* reg_val, const llvm::Value* reg_ptr);
 
+        bool TestStoreUpdate(const AbstractStore& store_old);
+
     private:
+        void MarkLocationUpdate(AbstractLocation loc) { important_loc_.insert(loc); }
+
+        void UpdateRegFile(const llvm::Value* reg, PointToMap pt_map);
+
         AbstractStore ExtractStoreToCurrentContext(const FunctionSummary& called_summary,
                                                    const std::vector<const llvm::Value*>& inputs);
 

@@ -1,4 +1,3 @@
-
 // a dummy printf
 int printf(const char* fmt, ...) { return 0; }
 
@@ -101,7 +100,9 @@ int main(int argc, char* argv[])
     if (evaluate(argv[1], &result) != 0)
     {
         printf("bad expression\n");
+        return -1;
     }
 
     printf("result: %d\n", result);
+    return 0;
 }

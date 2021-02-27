@@ -36,7 +36,8 @@ namespace mh
                     smt_solver_.RejectAlias(i, j);
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-                    fmt::print("[analysis] rejecting alias({}, {}), reason: non-ptr type\n", i, j);
+                    // fmt::print("[analysis] rejecting alias({}, {}), reason: non-ptr type\n", i,
+                    // j);
 #endif
                 }
                 else if (ptr_nest_levels[i] != ptr_nest_levels[j])
@@ -47,8 +48,9 @@ namespace mh
                     smt_solver_.RejectAlias(i, j);
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-                    fmt::print("[analysis] rejecting alias({}, {}), reason: different ptr level\n",
-                               i, j);
+                    // fmt::print("[analysis] rejecting alias({}, {}), reason: different ptr
+                    // level\n",
+                    //            i, j);
 #endif
                 }
                 else if (isa<GlobalVariable>(arg_i) && isa<GlobalVariable>(arg_j))
@@ -56,9 +58,18 @@ namespace mh
                     smt_solver_.RejectAlias(i, j);
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-                    fmt::print(
-                        "[analysis] rejecting alias({}, {}), reason: different global variable\n",
-                        i, j);
+                    // fmt::print(
+                    //     "[analysis] rejecting alias({}, {}), reason: different global
+                    //     variable\n", i, j);
+#endif
+                }
+                else if (type_i != type_j)
+                {
+                    // TODO: this is unsound!!!!!!
+                    smt_solver_.RejectAlias(i, j);
+#ifdef HEAP_ANALYSIS_DEBUG_MODE
+                    // fmt::print("[analysis] rejecting alias({}, {}), reason: different type\n", i,
+                    //            j);
 #endif
                 }
             }
@@ -67,7 +78,7 @@ namespace mh
         // initialize entry store for analysis
         for (int i = 0; i < inputs.size(); ++i)
         {
-            const llvm::Value* arg_i     = inputs[i];
+            const Value* arg_i           = inputs[i];
             int ptr_level_i              = ptr_nest_levels[i];
             const AbstractLocation loc_i = AbstractLocation::FromRegister(arg_i);
 
@@ -136,7 +147,8 @@ namespace mh
             }
             else if (!loopback)
             {
-                throw "premature initialization of execution for this block";
+                // TODO: workaround
+                // throw "premature initialization of execution for this block";
             }
         }
 
@@ -147,31 +159,27 @@ namespace mh
             bb_init_store = this->entry_store_;
         }
 
-        NormalizeStore(smt_solver_, bb_init_store);
+        // NormalizeStore(smt_solver_, bb_init_store);
         return std::make_unique<AbstractExecution>(this, move(bb_init_store));
     }
 
     bool AnalysisContext::CommitExecution(const llvm::BasicBlock* bb,
                                           std::unique_ptr<AbstractExecution> exec)
     {
-        // retrieve result store and normalize
-        AbstractStore result_store = move(exec->store_);
-        NormalizeStore(smt_solver_, result_store);
-
         // find iterator to the old store
         auto it = exec_store_cache_.find(bb);
 
         // first run, always update
         if (it == exec_store_cache_.end())
         {
-            exec_store_cache_[bb] = move(result_store);
+            exec_store_cache_[bb] = move(exec->store_);
             return true;
         }
 
         // consequent run, update if execution state is changed
-        if (!EqualAbstractStore(smt_solver_, it->second, result_store))
+        if (exec->TestStoreUpdate(it->second))
         {
-            it->second = move(result_store);
+            it->second = move(exec->store_);
             return true;
         }
 
@@ -308,8 +316,8 @@ namespace mh
             if (kHeapAnalysisPresentationPrint)
             {
                 fmt::print("  \"{}\" -> \"{}\"[label=\"{}\"]\n",
-                           *static_cast<const Value*>(loadstore.first),
-                           *static_cast<const Value*>(loadstore.second), constraint);
+                           *static_cast<const Value*>(loadstore.second),
+                           *static_cast<const Value*>(loadstore.first), constraint);
             }
             else
             {
@@ -464,18 +472,144 @@ namespace mh
         }
 
         // to print return value
-        if (const Value* ret_val = summary.return_inst->getReturnValue(); ret_val != nullptr)
+        if (summary.return_inst != nullptr)
         {
-            root_locs.push_back(AbstractLocation::FromRegister(ret_val));
+            if (const Value* ret_val = summary.return_inst->getReturnValue(); ret_val != nullptr)
+            {
+                root_locs.push_back(AbstractLocation::FromRegister(ret_val));
+            }
         }
 
         PrintStore(summary.store, root_locs, nullptr, &summary.inputs);
     }
 
+    bool AnalysisContext::AnalyzeBlock_DataDep(const llvm::BasicBlock* bb)
+    {
+        int pred_index = 0;
+        ConstrainedDataDependencyGraph graph;
+        for (const BasicBlock* prev_bb : predecessors(bb))
+        {
+            if (pred_index == 0)
+            {
+                graph = data_dep_cache_[prev_bb];
+            }
+            else
+            {
+                graph.Merge(Solver(), data_dep_cache_[prev_bb]);
+            }
+
+            pred_index += 1;
+        }
+
+        // initialize if no predecessor, i.e. first basic block
+        if (pred_index == 0)
+        {
+            for (int i = 0; i < current_summary_->inputs.size(); ++i)
+            {
+                const Value* arg_i = current_summary_->inputs[i];
+                int ptr_level_i    = GetPointerNestLevel(arg_i->getType());
+
+                for (int k = 0; k < ptr_level_i; ++k)
+                {
+                    graph[AbstractLocation::FromRuntimeMemory(arg_i, k)][arg_i] = Constraint{true};
+                }
+            }
+        }
+
+        for (const Instruction& inst : *bb)
+        {
+            if (isa<AllocaInst>(inst) || IsMallocCall(&inst))
+            {
+                graph[AbstractLocation::FromAllocation(&inst)][&inst] = Constraint{true};
+            }
+            else if (auto store_inst = dyn_cast<StoreInst>(&inst))
+            {
+                const auto& ptr_locs =
+                    LookupRegFile(TranslateAliasReg(store_inst->getPointerOperand()));
+
+                for (const auto& [ptr, c_ptr] : ptr_locs)
+                {
+                    graph[ptr].OverwriteRelationEdge(store_inst, c_ptr);
+                }
+            }
+            else if (auto call_inst = dyn_cast<CallInst>(&inst))
+            {
+                const auto& ptr_locs = update_hitory_.at(call_inst);
+
+                for (const auto& [ptr, c_passin] : ptr_locs)
+                {
+                    graph[ptr].OverwriteRelationEdge(call_inst, c_passin.Weaken());
+                }
+            }
+            else if (auto load_inst = dyn_cast<LoadInst>(&inst))
+            {
+                // find data flow
+                const auto& ptr_locs =
+                    LookupRegFile(TranslateAliasReg(load_inst->getPointerOperand()));
+
+                for (const auto& [ptr, c_ptr] : ptr_locs)
+                {
+                    for (const auto [src_val, c_contrib] : graph[ptr])
+                    {
+                        Constraint c_dep = c_ptr && c_contrib;
+
+                        if (Solver().TestSatisfiability(c_dep))
+                        {
+                            data_dep_result_[pair{load_inst, src_val}] = c_dep;
+                        }
+                    }
+                }
+            }
+        }
+
+        graph.Normalize(Solver());
+        auto& graph_cell = data_dep_cache_[bb];
+        if (!graph.Equals(Solver(), graph_cell))
+        {
+            graph_cell = graph;
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    void AnalyzeFunction_DataDep(AnalysisContext& ctx)
+    {
+        deque<const BasicBlock*> worklist;
+        unordered_set<const BasicBlock*> workset;
+
+        for (const BasicBlock& bb : *ctx.Func())
+        {
+            worklist.push_back(&bb);
+            workset.insert(&bb);
+        }
+
+        while (!worklist.empty())
+        {
+            const BasicBlock* bb = worklist.front();
+            worklist.pop_front();
+            workset.erase(bb);
+
+            if (ctx.AnalyzeBlock_DataDep(bb))
+            {
+                for (const BasicBlock* succ_bb : successors(bb))
+                {
+                    if (workset.find(succ_bb) == workset.end())
+                    {
+                        worklist.push_back(succ_bb);
+                        workset.insert(succ_bb);
+                    }
+                }
+            }
+        }
+    }
+
     bool AnalysisContext::AnalyzeBlock(const llvm::BasicBlock* bb)
     {
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        fmt::print("analyzing block {}...\n", bb->getName());
+        // fmt::print("analyzing block {}...\n", bb->getName());
 #endif
 
         auto exec = InitializeExecution(bb);
@@ -485,7 +619,12 @@ namespace mh
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
             // fmt::print("interpreting {}...\n", static_cast<const Value&>(inst));
 #endif
-            if (isa<AllocaInst>(inst))
+            if (isa<BranchInst>(inst) || isa<SwitchInst>(inst))
+            {
+                // usu. last instruction in a block
+                // do nothing as we initialize execution with predecessors
+            }
+            else if (isa<AllocaInst>(inst))
             {
                 exec->DoAlloc(&inst);
             }
@@ -513,20 +652,43 @@ namespace mh
             }
             else if (auto call_inst = dyn_cast<CallInst>(&inst))
             {
-                const Function* callee                = call_inst->getCalledFunction();
-                const FunctionSummary& callee_summary = Environment()->LookupSummary(callee);
+                const Function* callee = call_inst->getCalledFunction();
 
-                std::vector<const llvm::Value*> reg_inputs;
-                reg_inputs.reserve(callee_summary.inputs.size());
-                copy(call_inst->arg_begin(), call_inst->arg_end(), back_inserter(reg_inputs));
-                copy(callee_summary.globals.begin(), callee_summary.globals.end(),
-                     back_inserter(reg_inputs));
+                // TODO: workaround, why nullptr?
+                if (callee != nullptr)
+                {
+                    // TODO: workaround: assume library function does not change pt-relation
+                    auto name_ = callee->getName();
+                    string name{name_.begin(), name_.end()};
+                    static unordered_set<string> filter{};
+                    if (callee->isDeclaration() || filter.find(name) != filter.end())
+                    {
+                        regfile_[call_inst] = {{AbstractLocation::FromProgramValue(callee),
+                                                Constraint{true}.Weaken()}};
+                    }
+                    else
+                    {
+                        const FunctionSummary& callee_summary =
+                            Environment()->LookupSummary(callee);
 
-                exec->DoInvoke(&inst, callee_summary, reg_inputs);
+                        std::vector<const llvm::Value*> reg_inputs;
+                        reg_inputs.reserve(callee_summary.inputs.size());
+                        copy(call_inst->arg_begin(), call_inst->arg_end(),
+                             back_inserter(reg_inputs));
+                        copy(callee_summary.globals.begin(), callee_summary.globals.end(),
+                             back_inserter(reg_inputs));
+
+                        exec->DoInvoke(&inst, callee_summary, reg_inputs);
+                    }
+                }
             }
-            else if (isa<PHINode>(&inst))
+            else if (auto phi = dyn_cast<PHINode>(&inst))
             {
-                exec->DoAssignPhi(&inst, inst.getOperand(0), inst.getOperand(1));
+                exec->DoAssignPhi(&inst, phi->incoming_values());
+            }
+            else if (auto sel = dyn_cast<SelectInst>(&inst))
+            {
+                exec->DoAssignPhi(&inst, sel->getTrueValue(), sel->getFalseValue());
             }
             else
             {
@@ -547,8 +709,8 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        llvm::outs() << "---------\n";
-        llvm::outs() << *summary.func << "\n";
+        fmt::print("---------\n");
+        fmt::print("process function {}\n", summary.func->getName());
 #endif
 
         AnalysisContext ctx{&env, &summary};
@@ -583,10 +745,22 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        ctx.ExportRAWDependency();
+        // ctx.ExportRAWDependency();
+
+        // AnalyzeFunction_DataDep(ctx);
+        // fmt::print("[Data Dependency]\n");
+        // fmt::print("digraph DDG {{\n");
+        // for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
+        // {
+        //     constraint.Simplify();
+        //     fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
+        //                *static_cast<const Value*>(dep_pair.first), constraint);
+        // }
+        // fmt::print("}}\n");
 #endif
 
         // TODO: what solver to use?
+        // TODO: verify reassignment is correct
         AbstractStore result_store = ctx.ExportStore();
         if (summary.store.empty() || !EqualAbstractStore(ctx.Solver(), summary.store, result_store))
         {
@@ -620,6 +794,12 @@ namespace mh
         vector<FunctionSummary*> recursive_summaries;
         for (const Function* called_func : summary.called_functions)
         {
+            // TODO: workaround, why nullptr?
+            if (called_func == nullptr)
+            {
+                continue;
+            }
+
             FunctionSummary& called_summary = env.LookupSummary(called_func);
             if (called_summary.func->doesNotRecurse())
             {

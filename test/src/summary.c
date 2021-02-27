@@ -37,4 +37,6 @@ IntInt wrapIntInt(int x)
     return result;
 }
 
+int unwrapIntInt(IntInt x) { return x.value.value; }
+
 // int apply(int (*f)()) { return f(); }

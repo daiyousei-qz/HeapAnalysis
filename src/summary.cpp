@@ -67,6 +67,13 @@ namespace mh
     {
         summary.func = func;
 
+        // TODO: remove temporary workaround
+        if (func->isDeclaration())
+        {
+            summary.converged = true;
+            return;
+        }
+
         // collect parameters
         for (const Argument& arg : func->args())
         {
@@ -110,6 +117,11 @@ namespace mh
         // collect global variables used by called functions
         for (const Function* callee : summary.called_functions)
         {
+            // TODO: workaround, why nullptr?
+            if (callee == nullptr)
+            {
+                continue;
+            }
             const FunctionSummary& callee_summary = LookupSummary(callee);
             for (const GlobalVariable* global_var : callee_summary.globals)
             {
@@ -124,8 +136,8 @@ namespace mh
 
         // collect return instruction
         // NOTE we assume the last instruction of the function is the only exit point
+        // TODO: is this assumption always hold?
         summary.return_inst = dyn_cast<ReturnInst>(&func->back().back());
-        assert(summary.return_inst != nullptr);
     }
 
 } // namespace mh

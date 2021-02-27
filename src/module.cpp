@@ -31,6 +31,11 @@ namespace
             for (const CallGraphNode* node : SCC)
             {
                 auto func = node->getFunction();
+                if (func == nullptr)
+                {
+                    continue;
+                }
+
                 if (func == nullptr || func->isDeclaration())
                 {
                     continue;

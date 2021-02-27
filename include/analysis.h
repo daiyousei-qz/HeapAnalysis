@@ -42,7 +42,23 @@ namespace mh
         // alias mapping for cast/ptr operations
         std::unordered_map<const llvm::Value*, const llvm::Value*> alias_map_;
 
+        //
+        std::unordered_map<const llvm::Instruction*,
+                           std::unordered_map<AbstractLocation, Constraint>>
+            update_hitory_;
+
+        std::unordered_map<const llvm::BasicBlock*, ConstrainedDataDependencyGraph> data_dep_cache_;
+
     public:
+        // (read, write) -> constraint
+        std::map<std::pair<const llvm::Instruction*, const llvm::Value*>, Constraint>
+            data_dep_result_;
+
+        friend class AbstractExecution;
+
+    public:
+        auto Func() const noexcept { return current_summary_->func; }
+
         auto Environment() const noexcept { return env_; }
 
         auto CurrentSummary() const noexcept { return current_summary_; }
@@ -62,6 +78,19 @@ namespace mh
             }
 
             return pt_map;
+        }
+
+        bool UpdateRegFile(const llvm::Value* reg, PointToMap pt_map, bool force_update = false)
+        {
+            PointToMap& cell = LookupRegFile(reg);
+
+            if (force_update || !EqualPointToMap(Solver(), cell, pt_map))
+            {
+                cell = std::move(pt_map);
+                return true;
+            }
+
+            return false;
         }
 
         void AssignAliasReg(const llvm::Value* reg, const llvm::Value* alias_target)
@@ -102,6 +131,8 @@ namespace mh
          * program state is updated
          */
         bool AnalyzeBlock(const llvm::BasicBlock* bb);
+
+        bool AnalyzeBlock_DataDep(const llvm::BasicBlock* bb);
 
         /**
          * Export the abstract store after completion of analysis. Note the context object will
