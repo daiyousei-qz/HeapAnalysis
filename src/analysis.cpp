@@ -6,6 +6,8 @@
 using namespace std;
 using namespace llvm;
 
+extern int GLOBAL_NUM_RAW;
+
 namespace mh
 {
     AnalysisContext::AnalysisContext(const SummaryEnvironment* env, const FunctionSummary* summary)
@@ -147,7 +149,7 @@ namespace mh
             }
             else if (!loopback)
             {
-                // TODO: workaround
+                // TODO: workaround: visit blocks in dominator tree traversal order!!!
                 // throw "premature initialization of execution for this block";
             }
         }
@@ -183,11 +185,14 @@ namespace mh
             return true;
         }
 
+        // TODO: workaround, still update store as it's equivalent anyway
+        it->second = move(exec->store_);
+
         // no update
         return false;
     }
 
-    AbstractStore AnalysisContext::ExportStore()
+    void AnalysisContext::BuildResultStore()
     {
         AbstractStore result = std::move(exec_store_cache_.at(&current_summary_->func->back()));
         for (auto& [reg, pt_map] : regfile_)
@@ -196,7 +201,7 @@ namespace mh
         }
 
         NormalizeStore(smt_solver_, result);
-        return result;
+        result_store_ = move(result);
     }
 
     void AnalysisContext::ExportRAWDependency()
@@ -520,32 +525,24 @@ namespace mh
         {
             if (isa<AllocaInst>(inst) || IsMallocCall(&inst))
             {
-                graph[AbstractLocation::FromAllocation(&inst)][&inst] = Constraint{true};
+                auto loc_alloc          = AbstractLocation::FromAllocation(&inst);
+                graph[loc_alloc][&inst] = Constraint{true};
             }
             else if (auto store_inst = dyn_cast<StoreInst>(&inst))
             {
-                const auto& ptr_locs =
-                    LookupRegFile(TranslateAliasReg(store_inst->getPointerOperand()));
+                const PointToMap& ptr_locs = result_store_[AbstractLocation::FromRegister(
+                    TranslateAliasReg(store_inst->getPointerOperand()))];
 
                 for (const auto& [ptr, c_ptr] : ptr_locs)
                 {
-                    graph[ptr].OverwriteRelationEdge(store_inst, c_ptr);
-                }
-            }
-            else if (auto call_inst = dyn_cast<CallInst>(&inst))
-            {
-                const auto& ptr_locs = update_hitory_.at(call_inst);
-
-                for (const auto& [ptr, c_passin] : ptr_locs)
-                {
-                    graph[ptr].OverwriteRelationEdge(call_inst, c_passin.Weaken());
+                    graph.OverwriteRelationEdge(ptr, store_inst, c_ptr);
                 }
             }
             else if (auto load_inst = dyn_cast<LoadInst>(&inst))
             {
                 // find data flow
-                const auto& ptr_locs =
-                    LookupRegFile(TranslateAliasReg(load_inst->getPointerOperand()));
+                const PointToMap& ptr_locs = result_store_[AbstractLocation::FromRegister(
+                    TranslateAliasReg(load_inst->getPointerOperand()))];
 
                 for (const auto& [ptr, c_ptr] : ptr_locs)
                 {
@@ -560,19 +557,30 @@ namespace mh
                     }
                 }
             }
+            else if (auto call_inst = dyn_cast<CallInst>(&inst))
+            {
+                if (auto it = update_hitory_.find(call_inst); it != update_hitory_.end())
+                {
+                    const PointToMap& ptr_locs = it->second;
+
+                    for (const auto& [ptr, c_passin] : ptr_locs)
+                    {
+                        graph.OverwriteRelationEdge(ptr, call_inst, c_passin.Weaken());
+                    }
+                }
+            }
         }
 
-        graph.Normalize(Solver());
         auto& graph_cell = data_dep_cache_[bb];
-        if (!graph.Equals(Solver(), graph_cell))
-        {
-            graph_cell = graph;
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+
+        // TODO: workaround, verify soundness of such trick
+        graph.UpdateCachedNumEdge();
+        bool updated = graph.CachedNumEdge() != graph_cell.CachedNumEdge();
+        // bool updated = graph.CachedNumEdge() != graph_cell.CachedNumEdge() ||
+        //                !graph.Equals(Solver(), graph_cell);
+
+        graph_cell = move(graph);
+        return updated;
     }
 
     void AnalyzeFunction_DataDep(AnalysisContext& ctx)
@@ -658,10 +666,7 @@ namespace mh
                 if (callee != nullptr)
                 {
                     // TODO: workaround: assume library function does not change pt-relation
-                    auto name_ = callee->getName();
-                    string name{name_.begin(), name_.end()};
-                    static unordered_set<string> filter{};
-                    if (callee->isDeclaration() || filter.find(name) != filter.end())
+                    if (callee->isDeclaration())
                     {
                         regfile_[call_inst] = {{AbstractLocation::FromProgramValue(callee),
                                                 Constraint{true}.Weaken()}};
@@ -710,7 +715,9 @@ namespace mh
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         fmt::print("---------\n");
-        fmt::print("process function {}\n", summary.func->getName());
+        fmt::print("processing function {}\n", summary.func->getName());
+
+        auto t_start = chrono::high_resolution_clock::now();
 #endif
 
         AnalysisContext ctx{&env, &summary};
@@ -744,27 +751,12 @@ namespace mh
             }
         }
 
-#ifdef HEAP_ANALYSIS_DEBUG_MODE
-        // ctx.ExportRAWDependency();
-
-        // AnalyzeFunction_DataDep(ctx);
-        // fmt::print("[Data Dependency]\n");
-        // fmt::print("digraph DDG {{\n");
-        // for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
-        // {
-        //     constraint.Simplify();
-        //     fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
-        //                *static_cast<const Value*>(dep_pair.first), constraint);
-        // }
-        // fmt::print("}}\n");
-#endif
-
         // TODO: what solver to use?
         // TODO: verify reassignment is correct
-        AbstractStore result_store = ctx.ExportStore();
-        if (summary.store.empty() || !EqualAbstractStore(ctx.Solver(), summary.store, result_store))
+        ctx.BuildResultStore();
+        if (summary.store.empty() ||
+            !EqualAbstractStore(ctx.Solver(), summary.store, ctx.ExportResultStore()))
         {
-            summary.store = move(result_store);
             if (dependencies_converged)
             {
                 summary.converged = true;
@@ -776,8 +768,39 @@ namespace mh
         }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-        mh::DebugPrint(summary);
+        if (summary.converged)
+        {
+            int num_raw = 0;
+
+            AnalyzeFunction_DataDep(ctx);
+            fmt::print("[Data Dependency]\n");
+            fmt::print("digraph DDG {{\n");
+            for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
+            {
+                if (isa<StoreInst>(dep_pair.second))
+                {
+                    num_raw += 1;
+                    constraint.Simplify();
+                    fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
+                               *static_cast<const Value*>(dep_pair.first), constraint);
+                }
+            }
+            fmt::print("}}\n");
+
+            GLOBAL_NUM_RAW += num_raw;
+
+            using FpMilliseconds = std::chrono::duration<float, std::chrono::milliseconds::period>;
+            auto t_stop          = chrono::high_resolution_clock::now();
+            fmt::print("Run Time = {} ms\n", FpMilliseconds(t_stop - t_start).count());
+
+            fmt::print("Num RAW = {}\n", num_raw);
+            fmt::print("Total RAW = {}\n", GLOBAL_NUM_RAW);
+
+            mh::DebugPrint(summary);
+        }
 #endif
+
+        summary.store = move(ctx.ExportResultStore());
     }
 
     void AnalyzeFunctionRecursive(SummaryEnvironment& env, FunctionSummary& summary,
@@ -853,6 +876,11 @@ namespace mh
 
         unordered_set<const Function*> analysis_history;
         AnalyzeFunctionRecursive(env, summary, analysis_history, true);
+
+        for (auto func : summary.called_functions)
+        {
+            env.NotifyUse(func);
+        }
     }
 
 } // namespace mh

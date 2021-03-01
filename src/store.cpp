@@ -46,82 +46,107 @@ namespace mh
     bool EqualPointToMap(ConstraintSolver& solver, const PointToMap& pt_map_old,
                          const PointToMap& pt_map_new)
     {
-        for (const auto& [loc, c_new] : pt_map_new)
-        {
-            if (auto it = pt_map_old.find(loc); it != pt_map_old.end())
-            {
-                if (!solver.TestEquivalence(c_new, it->second))
-                {
-                    return false;
-                }
-            }
-            else
-            {
-                if (solver.TestSatisfiability(c_new))
-                {
-                    return false;
-                }
-            }
-        }
-
-        for (const auto& [loc, c_old] : pt_map_old)
-        {
-            if (auto it = pt_map_new.find(loc); it == pt_map_new.end())
-            {
-                if (solver.TestSatisfiability(c_old))
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
+        return EqualEdgeConstraintMap(solver, pt_map_old, pt_map_new);
     }
 
     bool EqualAbstractStore(ConstraintSolver& solver, const AbstractStore& s1,
                             const AbstractStore& s2)
     {
-        if (s1.size() != s2.size())
-        {
-            return false;
-        }
-
         for (const auto& [src_loc, pt_map_1] : s1)
         {
-            auto it_pt_map_2 = s2.find(src_loc);
-            if (it_pt_map_2 == s2.end())
+            if (auto it_pt_map_2 = s2.find(src_loc); it_pt_map_2 != s2.end())
             {
+                const auto& pt_map_2 = it_pt_map_2->second;
 
-                // different topology, src loc not in s2
-                return false;
-            }
-
-            const PointToMap& pt_map_2 = it_pt_map_2->second;
-            if (pt_map_1.size() != pt_map_2.size())
-            {
-                // different topology, num target loc differs
-                return false;
-            }
-
-            for (const auto& [target_loc, c1] : pt_map_1)
-            {
-                auto it = pt_map_2.find(target_loc);
-                if (it == pt_map_2.end())
+                if (pt_map_1.size() != pt_map_2.size())
                 {
-                    // different topology, target loc not in s2[src_loc]
-                    return false;
+                    if (!EqualEdgeConstraintMap(solver, pt_map_1, pt_map_2))
+                    {
+                        return false;
+                    }
                 }
-
-                const Constraint& c2 = it->second;
-                if (!solver.TestEquivalence(c1, c2))
+            }
+            else
+            {
+                for (const auto& [target_loc, c] : pt_map_1)
                 {
-                    // different constraint
-                    return false;
+                    if (solver.TestSatisfiability(c))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        for (const auto& [src_loc, pt_map_2] : s2)
+        {
+            if (auto it_pt_map_1 = s1.find(src_loc); it_pt_map_1 != s1.end())
+            {
+                const auto& pt_map_1 = it_pt_map_1->second;
+
+                if (pt_map_1.size() == pt_map_2.size())
+                {
+                    if (!EqualEdgeConstraintMap(solver, pt_map_1, pt_map_2))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                for (const auto& [target_loc, c] : pt_map_2)
+                {
+                    if (solver.TestSatisfiability(c))
+                    {
+                        return false;
+                    }
                 }
             }
         }
 
         return true;
+
+        // if (s1.size() != s2.size())
+        // {
+        //     return false;
+        // }
+
+        // for (const auto& [src_loc, pt_map_1] : s1)
+        // {
+        //     auto it_pt_map_2 = s2.find(src_loc);
+        //     if (it_pt_map_2 == s2.end())
+        //     {
+
+        //         // different topology, src loc not in s2
+        //         return false;
+        //     }
+
+        //     const PointToMap& pt_map_2 = it_pt_map_2->second;
+        //     if (pt_map_1.size() != pt_map_2.size())
+        //     {
+        //         // different topology, num target loc differs
+        //         return false;
+        //     }
+
+        //     for (const auto& [target_loc, c1] : pt_map_1)
+        //     {
+        //         auto it = pt_map_2.find(target_loc);
+        //         if (it == pt_map_2.end())
+        //         {
+        //             // different topology, target loc not in s2[src_loc]
+        //             return false;
+        //         }
+
+        //         const Constraint& c2 = it->second;
+        //         if (!solver.TestEquivalence(c1, c2))
+        //         {
+        //             // different constraint
+        //             return false;
+        //         }
+        //     }
+        // }
+
+        // return true;
     }
 
     void MergeAbstractStore(AbstractStore& s1, const AbstractStore& s2)
@@ -177,5 +202,12 @@ namespace mh
                 }
             }
         }
+    }
+
+    bool EqualDataDepEdgeCollection(ConstraintSolver& solver,
+                                    const ConstrainedDataDependencyGraph::EdgeCollection& col_old,
+                                    const ConstrainedDataDependencyGraph::EdgeCollection& col_new)
+    {
+        return EqualEdgeConstraintMap(solver, col_old.Container(), col_new.Container());
     }
 } // namespace mh

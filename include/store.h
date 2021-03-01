@@ -5,8 +5,82 @@
 
 namespace mh
 {
+    template <typename T> using EdgeConstraintMap = std::unordered_map<T, Constraint>;
+
+    // compare if edge_map_old === edge_map_new
+    template <typename T>
+    static bool EqualEdgeConstraintMap(ConstraintSolver& solver,
+                                       const EdgeConstraintMap<T>& edge_map_old,
+                                       const EdgeConstraintMap<T>& edge_map_new)
+    {
+        if (edge_map_old.size() != edge_map_old.size())
+        {
+            for (const auto& [target, c_new] : edge_map_new)
+            {
+                if (auto it = edge_map_old.find(target); it == edge_map_old.end())
+                {
+                    if (solver.TestSatisfiability(c_new))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            for (const auto& [target, c_old] : edge_map_old)
+            {
+                if (auto it = edge_map_new.find(target); it != edge_map_new.end())
+                {
+                    if (!solver.TestEquivalence(it->second, c_old))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (solver.TestSatisfiability(c_old))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        else
+        {
+            for (const auto& [target, c_new] : edge_map_new)
+            {
+                if (auto it = edge_map_old.find(target); it != edge_map_old.end())
+                {
+                    if (!solver.TestEquivalence(c_new, it->second))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (solver.TestSatisfiability(c_new))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            for (const auto& [target, c_old] : edge_map_old)
+            {
+                if (auto it = edge_map_new.find(target); it == edge_map_new.end())
+                {
+                    if (solver.TestSatisfiability(c_old))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
     // { point-to edge = (target-loc, constraint) }
-    using PointToMap = std::unordered_map<AbstractLocation, Constraint>;
+    using PointToMap = EdgeConstraintMap<AbstractLocation>;
 
     // loc -> {point-to edge}
     using AbstractStore = std::unordered_map<AbstractLocation, PointToMap>;
@@ -26,6 +100,7 @@ namespace mh
     // compare if s1 === s2
     // 1. same topology
     // 2. all constraints are equivalent
+    // TODO: NOTE heuristic optimize for [s1: new, s2: old]
     bool EqualAbstractStore(ConstraintSolver& solver, const AbstractStore& s1,
                             const AbstractStore& s2);
 
@@ -38,7 +113,7 @@ namespace mh
         class EdgeCollection
         {
         private:
-            std::unordered_map<T, Constraint> data_;
+            EdgeConstraintMap<T> data_;
 
             friend class ConstrainedRelationGraph;
 
@@ -64,6 +139,8 @@ namespace mh
                     return empty;
                 }
             }
+
+            const auto& Container() const noexcept { return data_; }
 
             void Clear() { data_.clear(); }
 
@@ -102,6 +179,7 @@ namespace mh
         };
 
     private:
+        int num_edge_ = 0;
         std::unordered_map<AbstractLocation, EdgeCollection> data_;
 
     public:
@@ -125,6 +203,27 @@ namespace mh
                 static EdgeCollection empty;
                 return empty;
             }
+        }
+
+        // NOTE users has to track if number of edges is changed and call `UpdateCachedNumEdge`
+        int CachedNumEdge() { return num_edge_; }
+
+        void UpdateCachedNumEdge()
+        {
+            num_edge_ = 0;
+            for (const auto& [loc, edges] : data_)
+            {
+                num_edge_ += edges.size();
+            }
+        }
+
+        void AddRelationEdge(const AbstractLocation& loc, const T& src, const Constraint& c)
+        {
+            data_[loc].AddRelationEdge(src, c);
+        }
+        void OverwriteRelationEdge(const AbstractLocation& loc, const T& src, const Constraint& c)
+        {
+            data_[loc].OverwriteRelationEdge(src, c);
         }
 
         void Normalize(ConstraintSolver& solver)
@@ -152,46 +251,65 @@ namespace mh
             }
         }
 
+        // TODO: NOTE heuristic optimize for [this: new, other: old]
         bool Equals(ConstraintSolver& solver, const ConstrainedRelationGraph& other)
         {
             const auto& g1 = data_;
             const auto& g2 = other.data_;
 
-            if (g1.size() != g2.size())
-            {
-                return false;
-            }
-
             for (const auto& [loc, edge_collection_1] : g1)
             {
-                auto it_edge_collection_2 = g2.find(loc);
-                if (it_edge_collection_2 == g2.end())
+                if (auto it_edge_collection_2 = g2.find(loc); it_edge_collection_2 != g2.end())
                 {
-                    // different topology, loc not in g2
-                    return false;
-                }
+                    const auto& edge_collection_2 = it_edge_collection_2->second;
 
-                const auto& edge_collection_2 = it_edge_collection_2->second;
-                if (edge_collection_1.size() != edge_collection_2.size())
-                {
-                    // different topology, num of target differs
-                    return false;
-                }
-
-                for (const auto& [target, c1] : edge_collection_1)
-                {
-                    auto it = edge_collection_2.data_.find(target);
-                    if (it == edge_collection_2.end())
+                    // only compare edge collections with different sizes in the first iteration
+                    // heuristic that they are more probable to differ
+                    if (edge_collection_1.size() != edge_collection_2.size())
                     {
-                        // different topology, target not in g2[loc]
-                        return false;
+                        if (!EqualEdgeConstraintMap(solver, edge_collection_1.Container(),
+                                                    edge_collection_2.Container()))
+                        {
+                            return false;
+                        }
                     }
-
-                    const Constraint& c2 = it->second;
-                    if (!solver.TestEquivalence(c1, c2))
+                }
+                else
+                {
+                    for (const auto& [target, c] : edge_collection_1)
                     {
-                        // different constraint
-                        return false;
+                        if (solver.TestSatisfiability(c))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            for (const auto& [loc, edge_collection_2] : g2)
+            {
+                if (auto it_edge_collection_1 = g1.find(loc); it_edge_collection_1 != g1.end())
+                {
+                    const auto& edge_collection_1 = it_edge_collection_1->second;
+
+                    // edge collections with different sizes are inspected in the first iteration
+                    if (edge_collection_1.size() == edge_collection_2.size())
+                    {
+                        if (!EqualEdgeConstraintMap(solver, edge_collection_1.Container(),
+                                                    edge_collection_2.Container()))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                else
+                {
+                    for (const auto& [target, c] : edge_collection_2)
+                    {
+                        if (solver.TestSatisfiability(c))
+                        {
+                            return false;
+                        }
                     }
                 }
             }
@@ -257,7 +375,23 @@ namespace mh
                 }
             }
         }
+
+        void Print()
+        {
+            for (const auto& [loc, edges] : data_)
+            {
+                fmt::print("+ {}\n", loc);
+                for (const auto& [target, c] : edges)
+                {
+                    fmt::print("-> {} ? {}\n", *target, c);
+                }
+            }
+        }
     };
 
     using ConstrainedDataDependencyGraph = ConstrainedRelationGraph<const llvm::Value*>;
+
+    bool EqualDataDepEdgeCollection(ConstraintSolver& solver,
+                                    const ConstrainedDataDependencyGraph::EdgeCollection& col_old,
+                                    const ConstrainedDataDependencyGraph::EdgeCollection& col_new);
 } // namespace mh

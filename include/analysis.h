@@ -42,6 +42,8 @@ namespace mh
         // alias mapping for cast/ptr operations
         std::unordered_map<const llvm::Value*, const llvm::Value*> alias_map_;
 
+        AbstractStore result_store_;
+
         //
         std::unordered_map<const llvm::Instruction*,
                            std::unordered_map<AbstractLocation, Constraint>>
@@ -135,10 +137,12 @@ namespace mh
         bool AnalyzeBlock_DataDep(const llvm::BasicBlock* bb);
 
         /**
-         * Export the abstract store after completion of analysis. Note the context object will
+         * Build the abstract store after completion of analysis. Note the context object will
          * enter an invalid state after calling this function and should not be used later.
          */
-        AbstractStore ExportStore();
+        void BuildResultStore();
+
+        AbstractStore& ExportResultStore() { return result_store_; }
 
         void ExportRAWDependency();
 

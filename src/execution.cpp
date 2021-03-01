@@ -513,6 +513,8 @@ namespace mh
         }
 
         return false;
+
+        // return !EqualAbstractStore(ctx_->Solver(), store_, store_old);
     }
 
     void AbstractExecution::UpdateRegFile(const llvm::Value* reg, PointToMap pt_map)

@@ -54,9 +54,11 @@ namespace mh
         // *p = %?
         void DoStore(const llvm::Value* reg_val, const llvm::Value* reg_ptr);
 
+        // test if this execution updates abstract stores(including registers)
         bool TestStoreUpdate(const AbstractStore& store_old);
 
     private:
+        // mark a location that it may be updated in this execution
         void MarkLocationUpdate(AbstractLocation loc) { important_loc_.insert(loc); }
 
         void UpdateRegFile(const llvm::Value* reg, PointToMap pt_map);

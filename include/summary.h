@@ -41,6 +41,9 @@ namespace mh
 
         // a summary is converged iff it's computed after all its called function is converged
         bool converged = false;
+
+        // number of caller of this function commited
+        int use_counter = 0;
     };
 
     class SummaryEnvironment
@@ -59,6 +62,24 @@ namespace mh
         const FunctionSummary& LookupSummary(const llvm::Function* func) const;
 
         int ComputeCallPoint(const llvm::Instruction* inst, int prev_call_point) const;
+
+        void NotifyUse(const llvm::Function* func)
+        {
+            // if (func == nullptr || func->isDeclaration())
+            // {
+            //     return;
+            // }
+
+            // if (auto it = analysis_memory.find(func); it != analysis_memory.end())
+            // {
+            //     FunctionSummary& summary = *it->second;
+            //     summary.use_counter += 1;
+            //     if (summary.use_counter >= func->getNumUses())
+            //     {
+            //         analysis_memory.erase(func);
+            //     }
+            // }
+        }
 
     private:
         void InitializeSummary(FunctionSummary& summary, const llvm::Function* func);

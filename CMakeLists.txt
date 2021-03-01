@@ -6,9 +6,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_compile_options(-std=c++17 -fPIC -g)
 
 add_definitions(-DHEAP_ANALYSIS_DEBUG_MODE)
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_definitions(-DHEAP_ANALYSIS_DEBUG_MODE)
-endif()
+# if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+#     add_definitions(-DHEAP_ANALYSIS_DEBUG_MODE)
+# endif()
 
 # LLVM
 find_package(LLVM CONFIG REQUIRED)
