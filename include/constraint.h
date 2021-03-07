@@ -17,9 +17,7 @@ namespace mh
     public:
         static SmtProvider& Current() noexcept
         {
-            // TODO: make it thread_local?
-            // static thread_local SmtProvider provider;
-            static SmtProvider provider;
+            static thread_local SmtProvider provider;
             return provider;
         }
 

@@ -12,10 +12,17 @@ namespace mh
         UpdateRegFile(reg, PointToMap{{loc, Constraint{true}}});
     }
 
-    void AbstractExecution::DoAlloc(const llvm::Instruction* reg)
+    void AbstractExecution::DoAlloc(const llvm::Instruction* reg, bool summary)
     {
         AbstractLocation loc = AbstractLocation::FromAllocation(reg);
-        UpdateRegFile(reg, PointToMap{{loc, Constraint{true}}});
+        if (summary)
+        {
+            UpdateRegFile(reg, PointToMap{{loc, Constraint{true}.Weaken()}});
+        }
+        else
+        {
+            UpdateRegFile(reg, PointToMap{{loc, Constraint{true}}});
+        }
 
         // assign null on allocation
         PointToMap& ptr_pt_map = store_[loc];

@@ -16,7 +16,9 @@ using namespace mh;
 using namespace std;
 using namespace llvm;
 
-int GLOBAL_NUM_RAW = 0;
+int GLOBAL_NUM_RAW_STORE = 0;
+int GLOBAL_NUM_RAW_CALL  = 0;
+int GLOBAL_NUM_RAW_ARG   = 0;
 
 namespace
 {
@@ -107,3 +109,28 @@ namespace
 
 char HeapAnalysis::ID = 0;
 static RegisterPass<HeapAnalysis> X("heap-analysis", "point-to analysis", false, true);
+
+namespace
+{
+    class InstNumAnalysis : public FunctionPass
+    {
+    public:
+        static char ID;
+        InstNumAnalysis() : FunctionPass(ID) {}
+
+        bool runOnFunction(Function& F) override
+        {
+            int i = 0;
+            for (const auto& B : F)
+            {
+                i += B.size();
+            }
+            fmt::print("{}:{}:{}\n", F.getName().str(), F.size(), i);
+
+            return false;
+        }
+    };
+} // namespace
+
+char InstNumAnalysis::ID = 0;
+static RegisterPass<InstNumAnalysis> Y("inst-num", "instruction number printer", false, true);

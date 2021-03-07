@@ -75,7 +75,6 @@ namespace mh
 
         AbstractLocation Relabel(int call_point) const noexcept
         {
-            // TODO: should we differentiate locations tagged with LocationTag::Value?
             assert(tag_ == LocationTag::Alloc || tag_ == LocationTag::Value);
             return AbstractLocation{tag_, definition_, call_point};
         }

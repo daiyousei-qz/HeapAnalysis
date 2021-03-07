@@ -87,15 +87,15 @@ namespace mh
             {
                 if (const CallInst* call_inst = dyn_cast<CallInst>(&inst))
                 {
+                    if (IsMallocCall(call_inst))
+                    {
+                        continue;
+                    }
+
                     const Function* callee = call_inst->getCalledFunction();
                     if (find(summary.called_functions.begin(), summary.called_functions.end(),
                              callee) == summary.called_functions.end())
                     {
-                        // TODO: remove this nasty workaround
-                        if (IsMallocCall(call_inst))
-                        {
-                            break;
-                        }
                         summary.called_functions.push_back(callee);
                     }
                 }

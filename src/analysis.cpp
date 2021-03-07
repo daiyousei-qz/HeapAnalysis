@@ -6,7 +6,9 @@
 using namespace std;
 using namespace llvm;
 
-extern int GLOBAL_NUM_RAW;
+extern int GLOBAL_NUM_RAW_STORE;
+extern int GLOBAL_NUM_RAW_CALL;
+extern int GLOBAL_NUM_RAW_ARG;
 
 namespace mh
 {
@@ -70,8 +72,9 @@ namespace mh
                     // TODO: this is unsound!!!!!!
                     smt_solver_.RejectAlias(i, j);
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
-                    // fmt::print("[analysis] rejecting alias({}, {}), reason: different type\n", i,
-                    //            j);
+// fmt::print("[analysis] rejecting alias({}, {}), reason:
+//                     different type\n ", i,
+//                     //            j);
 #endif
                 }
             }
@@ -575,9 +578,9 @@ namespace mh
 
         // TODO: workaround, verify soundness of such trick
         graph.UpdateCachedNumEdge();
-        bool updated = graph.CachedNumEdge() != graph_cell.CachedNumEdge();
-        // bool updated = graph.CachedNumEdge() != graph_cell.CachedNumEdge() ||
-        //                !graph.Equals(Solver(), graph_cell);
+        // bool updated = graph.CachedNumEdge() != graph_cell.CachedNumEdge();
+        bool updated = graph.CachedNumEdge() != graph_cell.CachedNumEdge() ||
+                       !graph.Equals(Solver(), graph_cell);
 
         graph_cell = move(graph);
         return updated;
@@ -634,11 +637,11 @@ namespace mh
             }
             else if (isa<AllocaInst>(inst))
             {
-                exec->DoAlloc(&inst);
+                exec->DoAlloc(&inst, inst.getType()->isArrayTy());
             }
             else if (IsMallocCall(&inst))
             {
-                exec->DoAlloc(&inst);
+                exec->DoAlloc(&inst, true);
             }
             else if (isa<BitCastInst>(&inst))
             {
@@ -719,7 +722,6 @@ namespace mh
 
         auto t_start = chrono::high_resolution_clock::now();
 #endif
-
         AnalysisContext ctx{&env, &summary};
 
         const Function* func = summary.func;
@@ -770,33 +772,53 @@ namespace mh
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         if (summary.converged)
         {
-            int num_raw = 0;
+            int num_raw_store = 0;
+            int num_raw_call  = 0;
+            int num_raw_arg   = 0;
 
             AnalyzeFunction_DataDep(ctx);
-            fmt::print("[Data Dependency]\n");
-            fmt::print("digraph DDG {{\n");
+            // fmt::print("[Data Dependency]\n");
+            // fmt::print("digraph DDG {{\n");
+            // for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
+            // {
+            //     constraint.Simplify();
+            //     fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
+            //                *static_cast<const Value*>(dep_pair.first), constraint);
+            // }
+            // fmt::print("}}\n");
+            // mh::DebugPrint(ctx.ExportResultStore());
+
             for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
             {
                 if (isa<StoreInst>(dep_pair.second))
                 {
-                    num_raw += 1;
-                    constraint.Simplify();
-                    fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
-                               *static_cast<const Value*>(dep_pair.first), constraint);
+                    num_raw_store += 1;
+                }
+                else if (isa<CallInst>(dep_pair.second))
+                {
+                    num_raw_call += 1;
+                }
+                else if (isa<Argument>(dep_pair.second) || isa<GlobalVariable>(dep_pair.second))
+                {
+                    num_raw_arg += 1;
                 }
             }
-            fmt::print("}}\n");
 
-            GLOBAL_NUM_RAW += num_raw;
+            GLOBAL_NUM_RAW_STORE += num_raw_store;
+            GLOBAL_NUM_RAW_CALL += num_raw_call;
+            GLOBAL_NUM_RAW_ARG += num_raw_arg;
 
             using FpMilliseconds = std::chrono::duration<float, std::chrono::milliseconds::period>;
             auto t_stop          = chrono::high_resolution_clock::now();
+
             fmt::print("Run Time = {} ms\n", FpMilliseconds(t_stop - t_start).count());
 
-            fmt::print("Num RAW = {}\n", num_raw);
-            fmt::print("Total RAW = {}\n", GLOBAL_NUM_RAW);
-
-            mh::DebugPrint(summary);
+            fmt::print("Num RAW (load-store) = {}\n", num_raw_store);
+            fmt::print("Num RAW (load-call) = {}\n", num_raw_call);
+            fmt::print("Num RAW (load-arg) = {}\n", num_raw_arg);
+            fmt::print("Total RAW (load-store) = {}\n", GLOBAL_NUM_RAW_STORE);
+            fmt::print("Total RAW (load-call) = {}\n", GLOBAL_NUM_RAW_CALL);
+            fmt::print("Total RAW (load-arg) = {}\n", GLOBAL_NUM_RAW_ARG);
         }
 #endif
 
@@ -864,8 +886,6 @@ namespace mh
         analysis_history.erase(summary.func);
     }
 
-    // TODO: llvm::Function::doesNotRecurse doesn't return the correct result
-    //       need an analysis to detect recursion
     void AnalyzeFunction(SummaryEnvironment& env, const Function* func)
     {
         FunctionSummary& summary = env.LookupSummary(func);

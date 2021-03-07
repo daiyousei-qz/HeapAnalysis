@@ -100,7 +100,7 @@ namespace mh
     // compare if s1 === s2
     // 1. same topology
     // 2. all constraints are equivalent
-    // TODO: NOTE heuristic optimize for [s1: new, s2: old]
+    // NOTE heuristic optimize for [s1: new, s2: old]
     bool EqualAbstractStore(ConstraintSolver& solver, const AbstractStore& s1,
                             const AbstractStore& s2);
 
@@ -251,7 +251,7 @@ namespace mh
             }
         }
 
-        // TODO: NOTE heuristic optimize for [this: new, other: old]
+        // NOTE heuristic optimize for [this: new, other: old]
         bool Equals(ConstraintSolver& solver, const ConstrainedRelationGraph& other)
         {
             const auto& g1 = data_;

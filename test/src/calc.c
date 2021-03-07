@@ -1,5 +1,4 @@
-// a dummy printf
-int printf(const char* fmt, ...) { return 0; }
+#include <stdio.h>
 
 int isdigit(int code) { return code >= '0' && code <= '9'; }
 
