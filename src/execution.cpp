@@ -24,12 +24,14 @@ namespace mh
             UpdateRegFile(reg, PointToMap{{loc, Constraint{true}}});
         }
 
-        // assign null on allocation
+// assign null on allocation
+#ifdef HEAP_ANALYSIS_POINTS_TO_DETAIL
         PointToMap& ptr_pt_map = store_[loc];
         if (ptr_pt_map.empty())
         {
             ptr_pt_map.insert(pair{AbstractLocation::FromProgramValue(nullptr), Constraint{true}});
         }
+#endif
     }
 
     void AbstractExecution::DoAssignPhi(const llvm::Instruction* reg, const llvm::Value* val1,

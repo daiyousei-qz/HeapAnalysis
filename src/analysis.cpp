@@ -671,8 +671,10 @@ namespace mh
                     // TODO: workaround: assume library function does not change pt-relation
                     if (callee->isDeclaration())
                     {
+#ifdef HEAP_ANALYSIS_POINTS_TO_DETAIL
                         regfile_[call_inst] = {{AbstractLocation::FromProgramValue(callee),
                                                 Constraint{true}.Weaken()}};
+#endif
                     }
                     else
                     {
@@ -700,7 +702,9 @@ namespace mh
             }
             else
             {
+#ifdef HEAP_ANALYSIS_POINTS_TO_DETAIL
                 exec->DoAssign(&inst, AbstractLocation::FromProgramValue(&inst));
+#endif
             }
         }
 
