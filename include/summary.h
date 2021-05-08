@@ -16,9 +16,22 @@ namespace mh
     class FunctionSummary;
     class SummaryEnvironment;
 
+    struct RWConstraint
+    {
+        Constraint read    = Constraint{false};
+        Constraint written = Constraint{false};
+    };
+
     class FunctionSummary
     {
     public:
+        // First analysis
+        //
+        mutable std::unordered_map<AbstractLocation, RWConstraint> rw_lookup;
+
+        // Actual analysis
+        //
+
         const llvm::Function* func;
 
         // called functions
@@ -65,20 +78,20 @@ namespace mh
 
         void NotifyUse(const llvm::Function* func)
         {
-            // if (func == nullptr || func->isDeclaration())
-            // {
-            //     return;
-            // }
+            if (func == nullptr || func->isDeclaration())
+            {
+                return;
+            }
 
-            // if (auto it = analysis_memory.find(func); it != analysis_memory.end())
-            // {
-            //     FunctionSummary& summary = *it->second;
-            //     summary.use_counter += 1;
-            //     if (summary.use_counter >= func->getNumUses())
-            //     {
-            //         analysis_memory.erase(func);
-            //     }
-            // }
+            if (auto it = analysis_memory.find(func); it != analysis_memory.end())
+            {
+                FunctionSummary& summary = *it->second;
+                summary.use_counter += 1;
+                if (summary.use_counter >= func->getNumUses())
+                {
+                    analysis_memory.erase(func);
+                }
+            }
         }
 
     private:

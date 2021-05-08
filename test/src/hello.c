@@ -1,5 +1,15 @@
 #include <stdlib.h>
 
+void p(int* a, int* b, int* c)
+{
+    if (*c > 0)
+        *a = *c;
+    else
+        *b = *c;
+
+    *c = -*c;
+}
+
 void f(int** a, int** b, int* p, int* q)
 {
     *a  = p;

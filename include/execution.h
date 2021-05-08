@@ -10,9 +10,13 @@ namespace mh
     struct FunctionSummary;
     class AnalysisContext;
 
+    struct ReadWrittenRecord;
+
     class AbstractExecution
     {
     private:
+        ReadWrittenRecord* record_;
+
         AnalysisContext* ctx_;
 
         AbstractStore store_;

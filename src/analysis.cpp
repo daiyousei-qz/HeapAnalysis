@@ -6,6 +6,7 @@
 using namespace std;
 using namespace llvm;
 
+extern int GLOBAL_NUM_DEP;
 extern int GLOBAL_NUM_RAW_STORE;
 extern int GLOBAL_NUM_RAW_CALL;
 extern int GLOBAL_NUM_RAW_ARG;
@@ -18,7 +19,7 @@ namespace mh
         this->env_             = env;
         this->current_summary_ = summary;
 
-        // add alias rejection
+        // compute input pointer level
         const vector<const Value*>& inputs = summary->inputs;
         vector<int> ptr_nest_levels;
         for (const Value* arg : inputs)
@@ -26,6 +27,7 @@ namespace mh
             ptr_nest_levels.push_back(GetPointerNestLevel(arg->getType()));
         }
 
+        // compute alias rejection
         for (size_t i = 0; i < inputs.size(); ++i)
         {
             for (size_t j = 0; j < i; ++j)
@@ -90,7 +92,14 @@ namespace mh
             // add edges when there's strictly no aliasing, i.e. vi -> *vi -> **vi
             AbstractLocation loc         = loc_i;
             AbstractLocation loc_pointed = AbstractLocation::FromRuntimeMemory(arg_i, 0);
-            entry_store_[loc]            = {{loc_pointed, smt_solver_.MakeAliasConstraint(i, i)}};
+            if (pre_analysis)
+            {
+                entry_store_[loc] = {{loc_pointed, Constraint{true}}};
+            }
+            else
+            {
+                entry_store_[loc] = {{loc_pointed, smt_solver_.MakeAliasConstraint(i, i)}};
+            }
 
             for (int k = 0; k < ptr_level_i; ++k)
             {
@@ -100,13 +109,17 @@ namespace mh
             }
 
             // add edges under aliased conditions
-            for (int j = 0; j < i; ++j)
+            if (!pre_analysis)
             {
-                if (smt_solver_.TestAlias(i, j))
+                for (int j = 0; j < i; ++j)
                 {
-                    AbstractLocation loc_alias = AbstractLocation::FromRuntimeMemory(inputs[j], 0);
-                    entry_store_[loc_i].insert(
-                        pair{loc_alias, smt_solver_.MakeAliasConstraint(i, j)});
+                    if (smt_solver_.TestAlias(i, j))
+                    {
+                        AbstractLocation loc_alias =
+                            AbstractLocation::FromRuntimeMemory(inputs[j], 0);
+                        entry_store_[loc_i].insert(
+                            pair{loc_alias, smt_solver_.MakeAliasConstraint(i, j)});
+                    }
                 }
             }
         }
@@ -143,6 +156,9 @@ namespace mh
         };
 
         // merge
+        ReadWrittenRecord* record = &rw_records_lookup_[bb];
+
+        bool first_pred = true;
         for (const BasicBlock* pred_bb : predecessors(bb))
         {
             bool loopback = ctrl_flow_info_.IsBackEdge(pred_bb, bb);
@@ -155,6 +171,48 @@ namespace mh
                 // TODO: workaround: visit blocks in dominator tree traversal order!!!
                 // throw "premature initialization of execution for this block";
             }
+
+            const auto& prev_record = rw_records_lookup_[pred_bb];
+            for (const auto& loc_may_read : prev_record.may_read)
+            {
+                record->may_read.insert(loc_may_read);
+            }
+            for (const auto& loc_may_written : prev_record.may_written)
+            {
+                record->may_written.insert(loc_may_written);
+            }
+            if (first_pred)
+            {
+                record->must_read    = prev_record.must_read;
+                record->must_written = prev_record.must_written;
+            }
+            else
+            {
+                for (auto it = record->must_read.begin(); it != record->must_read.end();)
+                {
+                    if (prev_record.must_read.find(*it) == prev_record.must_read.end())
+                    {
+                        it = record->must_read.erase(it);
+                    }
+                    else
+                    {
+                        ++it;
+                    }
+                }
+                for (auto it = record->must_written.begin(); it != record->must_written.end();)
+                {
+                    if (prev_record.must_written.find(*it) == prev_record.must_written.end())
+                    {
+                        it = record->must_written.erase(it);
+                    }
+                    else
+                    {
+                        ++it;
+                    }
+                }
+            }
+
+            first_pred = false;
         }
 
         // TODO: is this condition sufficient for detecting the first basic block?
@@ -165,7 +223,10 @@ namespace mh
         }
 
         // NormalizeStore(smt_solver_, bb_init_store);
-        return std::make_unique<AbstractExecution>(this, move(bb_init_store));
+        auto exec     = std::make_unique<AbstractExecution>(this, move(bb_init_store));
+        exec->record_ = record;
+
+        return exec;
     }
 
     bool AnalysisContext::CommitExecution(const llvm::BasicBlock* bb,
@@ -562,13 +623,56 @@ namespace mh
             }
             else if (auto call_inst = dyn_cast<CallInst>(&inst))
             {
-                if (auto it = update_hitory_.find(call_inst); it != update_hitory_.end())
-                {
-                    const PointToMap& ptr_locs = it->second;
+                // if (auto it = update_hitory_.find(call_inst); it != update_hitory_.end())
+                // {
+                //     const PointToMap& ptr_locs = it->second;
 
-                    for (const auto& [ptr, c_passin] : ptr_locs)
+                //     for (const auto& [ptr, c_passin] : ptr_locs)
+                //     {
+                //         graph.OverwriteRelationEdge(ptr, call_inst, c_passin.Weaken());
+
+                //         for (const auto [src_val, c_contrib] : graph[ptr])
+                //         {
+                //             if (call_inst == src_val)
+                //             {
+                //                 continue;
+                //             }
+
+                //             Constraint c_dep = c_passin && c_contrib;
+
+                //             if (Solver().TestSatisfiability(c_dep))
+                //             {
+                //                 data_dep_result_[pair{call_inst, src_val}] = c_dep;
+                //             }
+                //         }
+                //     }
+                // }
+
+                if (auto it = rw_call_mapping_.find(call_inst); it != rw_call_mapping_.end())
+                {
+                    const auto& rw_locs = it->second;
+
+                    for (const auto& [ptr, c_rw_pair] : rw_locs)
                     {
-                        graph.OverwriteRelationEdge(ptr, call_inst, c_passin.Weaken());
+                        graph.OverwriteRelationEdge(ptr, call_inst, c_rw_pair.written);
+
+                        if (Solver().TestSatisfiability(c_rw_pair.read))
+                        {
+                            for (const auto [src_val, c_contrib] : graph[ptr])
+                            {
+                                if (call_inst == src_val)
+                                {
+                                    continue;
+                                }
+
+                                Constraint c_dep = c_rw_pair.read && c_contrib;
+
+                                if (Solver().TestSatisfiability(c_dep))
+                                {
+                                    data_dep_result_[pair{call_inst, src_val}] = c_dep;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -713,7 +817,7 @@ namespace mh
 
     // analyze the function once, assuming summaries of all called functions ready
     void AnalyzeFunctionAux(SummaryEnvironment& env, FunctionSummary& summary,
-                            bool dependencies_converged = false)
+                            bool dependencies_converged = false, bool pre_analysis = false)
     {
         if (summary.converged)
         {
@@ -722,7 +826,8 @@ namespace mh
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
         fmt::print("---------\n");
-        fmt::print("processing function {}\n", summary.func->getName());
+        fmt::print("processing function {} @ stage {}\n", summary.func->getName(),
+                   pre_analysis ? 0 : 1);
 
         auto t_start = chrono::high_resolution_clock::now();
 #endif
@@ -759,41 +864,112 @@ namespace mh
 
         // TODO: what solver to use?
         // TODO: verify reassignment is correct
-        ctx.BuildResultStore();
-        if (summary.store.empty() ||
-            !EqualAbstractStore(ctx.Solver(), summary.store, ctx.ExportResultStore()))
+        if (!pre_analysis)
         {
-            if (dependencies_converged)
+            ctx.BuildResultStore();
+            if (summary.store.empty() ||
+                !EqualAbstractStore(ctx.Solver(), summary.store, ctx.ExportResultStore()))
+            {
+                if (dependencies_converged)
+                {
+                    summary.converged = true;
+                }
+            }
+            else
             {
                 summary.converged = true;
             }
         }
-        else
-        {
-            summary.converged = true;
-        }
 
 #ifdef HEAP_ANALYSIS_DEBUG_MODE
+        if (pre_analysis)
+        {
+            const auto& record = ctx.rw_records_lookup_.at(&func->back());
+            bool entry_printed;
+
+            fmt::print("[may-read]\n");
+            entry_printed = false;
+            for (const auto& loc : record.may_read)
+            {
+                if (record.must_read.find(loc) == record.must_read.end())
+                {
+                    entry_printed = true;
+                    fmt::print("{} ", loc);
+                    summary.rw_lookup[loc].read = Constraint{true}.Weaken();
+                }
+            }
+            if (entry_printed)
+            {
+                fmt::print("\n");
+            }
+
+            fmt::print("[must-read]\n");
+            entry_printed = false;
+            for (const auto& loc : record.must_read)
+            {
+                entry_printed = true;
+                fmt::print("{} ", loc);
+                summary.rw_lookup[loc].read = Constraint{true};
+            }
+            if (entry_printed)
+            {
+                fmt::print("\n");
+            }
+
+            fmt::print("[may-write]\n");
+            entry_printed = false;
+            for (const auto& loc : record.may_written)
+            {
+                if (record.must_written.find(loc) == record.must_written.end())
+                {
+                    entry_printed = true;
+                    fmt::print("{} ", loc);
+                    summary.rw_lookup[loc].written = Constraint{true}.Weaken();
+                }
+            }
+            if (entry_printed)
+            {
+                fmt::print("\n");
+            }
+
+            fmt::print("[must-write]\n");
+            entry_printed = false;
+            for (const auto& loc : record.must_written)
+            {
+                entry_printed = true;
+                fmt::print("{} ", loc);
+                summary.rw_lookup[loc].written = Constraint{true};
+            }
+            if (entry_printed)
+            {
+                fmt::print("\n");
+            }
+            return;
+        }
+
         if (summary.converged)
         {
+            int num_dep       = 0;
             int num_raw_store = 0;
             int num_raw_call  = 0;
             int num_raw_arg   = 0;
 
             AnalyzeFunction_DataDep(ctx);
-            // fmt::print("[Data Dependency]\n");
-            // fmt::print("digraph DDG {{\n");
-            // for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
-            // {
-            //     constraint.Simplify();
-            //     fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
-            //                *static_cast<const Value*>(dep_pair.first), constraint);
-            // }
-            // fmt::print("}}\n");
-            // mh::DebugPrint(ctx.ExportResultStore());
+            fmt::print("[Data Dependency]\n");
+            fmt::print("digraph DDG {{\n");
+            for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
+            {
+                constraint.Simplify();
+                fmt::print("\"{}\" -> \"{}\" [label=\"{}\"]\n", *dep_pair.second,
+                           *static_cast<const Value*>(dep_pair.first), constraint);
+            }
+            fmt::print("}}\n");
+            mh::DebugPrint(ctx.ExportResultStore());
 
             for (auto& [dep_pair, constraint] : ctx.data_dep_result_)
             {
+                num_dep += 1;
+
                 if (isa<StoreInst>(dep_pair.second))
                 {
                     num_raw_store += 1;
@@ -808,6 +984,7 @@ namespace mh
                 }
             }
 
+            GLOBAL_NUM_DEP += num_dep;
             GLOBAL_NUM_RAW_STORE += num_raw_store;
             GLOBAL_NUM_RAW_CALL += num_raw_call;
             GLOBAL_NUM_RAW_ARG += num_raw_arg;
@@ -823,9 +1000,9 @@ namespace mh
             fmt::print("Total RAW (load-store) = {}\n", GLOBAL_NUM_RAW_STORE);
             fmt::print("Total RAW (load-call) = {}\n", GLOBAL_NUM_RAW_CALL);
             fmt::print("Total RAW (load-arg) = {}\n", GLOBAL_NUM_RAW_ARG);
+            fmt::print("Total RAW relations = {}\n", GLOBAL_NUM_DEP);
         }
 #endif
-
         summary.store = move(ctx.ExportResultStore());
     }
 
@@ -883,7 +1060,8 @@ namespace mh
             }
 
             // analyze the current function
-            AnalyzeFunctionAux(env, summary, dep_converged);
+            AnalyzeFunctionAux(env, summary, dep_converged, true);
+            AnalyzeFunctionAux(env, summary, dep_converged, false);
         } while (expect_converge && !summary.converged);
 
         // remove the current function from the call chain

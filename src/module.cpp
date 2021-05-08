@@ -16,6 +16,7 @@ using namespace mh;
 using namespace std;
 using namespace llvm;
 
+int GLOBAL_NUM_DEP       = 0;
 int GLOBAL_NUM_RAW_STORE = 0;
 int GLOBAL_NUM_RAW_CALL  = 0;
 int GLOBAL_NUM_RAW_ARG   = 0;

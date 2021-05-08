@@ -425,6 +425,8 @@ namespace mh
 
         ctx_->update_hitory_[reg].clear();
 
+        ctx_->rw_call_mapping_[reg].clear();
+
         // step 1: rewrite constraint terms
         //
         // we want to convert alias constraint from callee's context into call sites'
@@ -446,6 +448,20 @@ namespace mh
         //          ai --> *ai --> ... --> **ai
         ArgParamMappingLookup loc_mapping = ConstructArgParamMappingLookup(called_summary, inputs);
 
+        for (const auto& [loc_a, mappings] : loc_mapping.ap)
+        {
+            Constraint c_acc_r;
+            Constraint c_acc_w;
+            for (const auto& [loc_p, c] : mappings)
+            {
+                const auto& c_rw_p = called_summary.rw_lookup[loc_p];
+                c_acc_r            = c_acc_r || (c && c_rw_p.read);
+                c_acc_w            = c_acc_w || (c && c_rw_p.written);
+            }
+
+            ctx_->rw_call_mapping_[reg][loc_a] = RWConstraint{.read = c_acc_r, .written = c_acc_w};
+        }
+
         // step 3: merge callee's heap into current execution
         //
         MergeInvocationStore(reg, called_summary, move(result_store), move(loc_mapping));
@@ -460,6 +476,15 @@ namespace mh
         const PointToMap& pt_map_ptr = ctx_->LookupRegFile(reg_ptr);
         for (const auto& [ptr, ptr_constraint] : pt_map_ptr)
         {
+            if (ctx_->pre_analysis && ptr.Tag() == LocationTag::Dynamic)
+            {
+                record_->may_read.insert(ptr);
+                if (ctx_->Solver().TestValidity(ptr_constraint))
+                {
+                    record_->must_read.insert(ptr);
+                }
+            }
+
             if (auto it = store_.find(ptr); it != store_.end())
             {
                 for (const auto& [val, val_constraint] : it->second)
@@ -483,6 +508,15 @@ namespace mh
         const PointToMap& pt_map_ptr = ctx_->LookupRegFile(reg_ptr);
         for (const auto& [ptr, ptr_constraint] : pt_map_ptr)
         {
+            if (ctx_->pre_analysis && ptr.Tag() == LocationTag::Dynamic)
+            {
+                record_->may_written.insert(ptr);
+                if (ctx_->Solver().TestValidity(ptr_constraint))
+                {
+                    record_->must_written.insert(ptr);
+                }
+            }
+
             MarkLocationUpdate(ptr);
 
             PointToMap& pt_map_ptr_deref = store_[ptr];

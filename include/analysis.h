@@ -19,9 +19,30 @@ namespace mh
     // SSA form
     using AbstractRegFile = std::unordered_map<const llvm::Value*, PointToMap>;
 
+    struct ReadWrittenRecord
+    {
+        std::unordered_set<AbstractLocation> may_read;
+        std::unordered_set<AbstractLocation> must_read;
+        std::unordered_set<AbstractLocation> may_written;
+        std::unordered_set<AbstractLocation> must_written;
+    };
     class AnalysisContext
     {
-    private:
+    public:
+        // First-Stage Analysis
+        //
+
+        bool pre_analysis = true;
+
+        std::unordered_map<const llvm::BasicBlock*, ReadWrittenRecord> rw_records_lookup_;
+
+        std::unordered_map<const llvm::Instruction*,
+                           std::unordered_map<AbstractLocation, RWConstraint>>
+            rw_call_mapping_;
+
+        // Generic Analysis Data
+        //
+
         const SummaryEnvironment* env_;
 
         const FunctionSummary* current_summary_;
